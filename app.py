@@ -21,6 +21,8 @@ PIN = os.environ.get("REMOTE_PIN") or "1312"
 STREAM_WIDTH = int(os.environ.get("STREAM_WIDTH", 1600))
 JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", 90))
 FRAME_DELAY = float(os.environ.get("FRAME_DELAY", 1 / 20))  # ~20 fps cible
+CINEMA_BITRATE = os.environ.get("CINEMA_BITRATE", "6M")
+CINEMA_FPS = int(os.environ.get("CINEMA_FPS", 30))
 
 pyautogui.FAILSAFE = True  # jette la souris dans un coin de l'ecran pour tout stopper
 
@@ -59,7 +61,13 @@ MAIN_PAGE = """
 <style>
   html,body{margin:0;height:100vh;height:100dvh;background:#000;overflow:hidden;font-family:sans-serif;color:#eee}
   #viewport{position:fixed;inset:0;height:100vh;height:100dvh;overflow:hidden;background:#000;touch-action:none}
-  #screen{position:absolute;top:0;left:0;width:100%;transform-origin:0 0}
+  /* Sans ceci, un appui long sur l image ouvre la feuille iOS "Enregistrer
+     dans Photos / Partager" : le geste de glisser-deposer ne parvenait jamais
+     jusqu a la page. */
+  #screen{position:absolute;top:0;left:0;width:100%;transform-origin:0 0;
+    -webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
+    pointer-events:auto}
+  #viewport{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
   /* Chaque commande est une pastille de verre, sur le modele du badge de
      saisie : meme fond, meme flou, meme rayon. Plus de barre pleine largeur -
      les pastilles flottent au-dessus de l'image, centrees en bas. */
@@ -790,6 +798,29 @@ def type_unicode(text):
     return sent
 
 
+MOUSEEVENTF_WHEEL = 0x0800
+WHEEL_DELTA = 120       # un cran de molette, unite fixee par Windows
+
+
+def scroll_wheel(clicks):
+    """Molette par SendInput plutot que par pyautogui.
+
+    pyautogui.scroll passe par mouse_event, une API heritee que beaucoup
+    d applications modernes ignorent : la souris se deplacait bien, mais rien
+    ne defilait. SendInput emprunte le meme chemin qu une vraie molette.
+    """
+    if not clicks:
+        return 0
+    item = _INPUT()
+    item.type = 0   # INPUT_MOUSE
+    item.mi = _MOUSEINPUT(0, 0, clicks * WHEEL_DELTA, MOUSEEVENTF_WHEEL, 0, None)
+    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(_INPUT))
+    if sent != 1:
+        print("SendInput molette : refuse (code %d)"
+              % ctypes.windll.kernel32.GetLastError())
+    return sent
+
+
 @app.route("/type", methods=["POST"])
 def type_text():
     if not logged_in():
@@ -828,7 +859,7 @@ def scroll():
     # sans deplacer la souris, le defilement partirait au mauvais endroit.
     if data.get("x") is not None:
         pyautogui.moveTo(*_to_screen(data))
-    pyautogui.scroll(int(data.get("amount", 0)))
+    scroll_wheel(int(data.get("amount", 0)))
     return jsonify(ok=True)
 
 
@@ -860,7 +891,8 @@ def cinema_start():
         return jsonify(ok=False), 401
     if not cinema.ffmpeg_available():
         return jsonify(ok=False, error="ffmpeg introuvable dans le PATH.")
-    cinema.start(MONITORS[current_monitor["idx"]])
+    cinema.start(MONITORS[current_monitor["idx"]], index=current_monitor["idx"],
+                 bitrate=CINEMA_BITRATE, fps=CINEMA_FPS)
     if not cinema.wait_for_playlist():
         cinema.stop()
         return jsonify(ok=False, error="La capture n a pas demarre.")
@@ -897,11 +929,89 @@ def local_ip():
         s.close()
 
 
+def parse_args():
+    """Tout est reglable au lancement : la machine d en face n aura ni les
+    memes ecrans, ni les memes peripheriques audio, ni le meme reseau."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Controle du PC depuis un telephone, sur le reseau local.")
+    parser.add_argument("--pin", default=PIN,
+                        help="code d acces (defaut : variable REMOTE_PIN, sinon 1312)")
+    parser.add_argument("--port", type=int, default=5000, help="port d ecoute")
+    parser.add_argument("--host", default="0.0.0.0",
+                        help="interface d ecoute ; 127.0.0.1 pour n exposer que la machine")
+    parser.add_argument("--width", type=int, default=STREAM_WIDTH,
+                        help="largeur du flux interactif en pixels")
+    parser.add_argument("--quality", type=int, default=JPEG_QUALITY,
+                        help="qualite JPEG du flux interactif, 1 a 95")
+    parser.add_argument("--fps", type=int, default=int(round(1 / FRAME_DELAY)),
+                        help="images par seconde du flux interactif")
+    parser.add_argument("--audio", metavar="NOM",
+                        help="peripherique audio du mode cinema ; 'none' pour couper")
+    parser.add_argument("--cinema-bitrate", default="6M",
+                        help="debit video du mode cinema")
+    parser.add_argument("--cinema-fps", type=int, default=30,
+                        help="images par seconde du mode cinema")
+    parser.add_argument("--list-audio", action="store_true",
+                        help="mesure et affiche le niveau de chaque peripherique, puis quitte")
+    return parser.parse_args()
+
+
+def list_audio(seconds=2):
+    """Affiche les peripheriques avec leur niveau reel.
+
+    Un peripherique peut s ouvrir sans erreur et ne porter que du silence : les
+    mix virtuels auxquels aucune source n est affectee sont dans ce cas. Le seul
+    moyen de savoir lequel choisir est de les ecouter quelques secondes, en
+    laissant tourner un son sur la machine pendant la mesure.
+    """
+    names = cinema.list_audio_devices()
+    if not names:
+        print("Aucun peripherique audio DirectShow detecte.")
+        return
+    print("Mesure sur %d secondes chacun - laisse un son tourner pendant ce temps.\n"
+          % seconds)
+    for name in names:
+        level = cinema.measure_device(name, seconds)
+        if level is None:
+            verdict = "illisible"
+        elif level < -80:
+            verdict = "silence"
+        else:
+            verdict = "%.0f dB" % level
+        print("  %-46s %s" % (name, verdict))
+    print("\nReprends le nom exact avec --audio \"...\"")
+
+
 if __name__ == "__main__":
-    print("=" * 50)
-    print(f"PIN de connexion : {PIN}")
-    print(f"Depuis ton telephone (meme Wi-Fi) va sur : http://{local_ip()}:5000")
-    print(f"Ecrans detectes : {MONITOR_COUNT}")
-    print(f"Qualite stream : largeur={STREAM_WIDTH}px qualite={JPEG_QUALITY} delai={FRAME_DELAY:.3f}s (~{1/FRAME_DELAY:.0f} fps cible)")
-    print("=" * 50)
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    args = parse_args()
+
+    if args.list_audio:
+        list_audio()
+        raise SystemExit(0)
+
+    PIN = args.pin
+    STREAM_WIDTH = args.width
+    JPEG_QUALITY = args.quality
+    FRAME_DELAY = 1 / max(1, args.fps)
+    CINEMA_BITRATE = args.cinema_bitrate
+    CINEMA_FPS = args.cinema_fps
+    if args.audio is not None:
+        cinema.set_audio_device(args.audio)
+
+    device = cinema.pick_audio_device()
+    print("=" * 60)
+    print("PIN de connexion : %s" % PIN)
+    print("Depuis ton telephone (meme reseau) : http://%s:%d" % (local_ip(), args.port))
+    print("Ecrans detectes  : %d" % MONITOR_COUNT)
+    print("Flux interactif  : %dpx, qualite %d, ~%d i/s"
+          % (STREAM_WIDTH, JPEG_QUALITY, args.fps))
+    if not cinema.ffmpeg_available():
+        print("Mode cinema      : indisponible (ffmpeg absent du PATH)")
+    else:
+        capture = "ddagrab (GPU)" if cinema._has_ddagrab() else "gdigrab (processeur)"
+        print("Mode cinema      : %s, %s a %d i/s" % (capture, args.cinema_bitrate, args.cinema_fps))
+        print("Son du cinema    : %s" % (device or "aucun - voir --list-audio"))
+    print("=" * 60)
+    app.run(host=args.host, port=args.port, threaded=True)

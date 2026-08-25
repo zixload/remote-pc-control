@@ -64,9 +64,20 @@ Electron apps and Store apps draw their own caret and would go unnoticed.
 python app.py
 ```
 
-It prints the address to open on your phone and the PIN. Both are configurable
-through environment variables: `REMOTE_PIN`, `STREAM_WIDTH`, `JPEG_QUALITY`,
-`FRAME_DELAY`.
+It prints the address to open on your phone and the PIN.
+
+Everything is adjustable at launch, since the next machine will not have your
+screens, your audio devices or your network:
+
+```powershell
+python app.py --help
+python app.py --pin 4821 --width 1280 --quality 80 --fps 25
+python app.py --audio "Personal Mix (Elgato Virtual Audio)" --cinema-fps 60
+```
+
+The same settings also read from environment variables (`REMOTE_PIN`,
+`STREAM_WIDTH`, `JPEG_QUALITY`, `FRAME_DELAY`, `CINEMA_AUDIO`), the command
+line winning over both.
 
 ## Full screen on iPhone
 
@@ -97,10 +108,27 @@ written and buffered. That rules out interaction, which is exactly why this
 mode drops it. ffmpeg only runs while the phone is asking for segments and
 stops on its own about 25 seconds after you leave.
 
-Sound is captured too, from a virtual audio device when the machine has one:
-Elgato Virtual Audio, Stereo Mix, VB-Cable and the like. A microphone is never
-picked by default - broadcasting the room by accident would be a poor surprise.
-`CINEMA_AUDIO` names a device explicitly, or `none` turns sound off.
+Sound comes from a virtual audio device: Elgato Virtual Audio, Stereo Mix,
+VB-Cable and the like. A microphone is never picked by default - broadcasting
+the room by accident would be a poor surprise.
+
+Pick the right one by measuring rather than guessing:
+
+```powershell
+python app.py --list-audio
+```
+
+It opens each device for two seconds and reports its level, so play something
+while it runs. This matters more than it sounds: a virtual mix with no source
+assigned to it opens without error and carries nothing but digital silence.
+Listing device names alone will not tell you which is which. Then pass the one
+with signal to `--audio`, or `none` to go silent.
+
+Capture uses the Desktop Duplication API through ffmpeg's `ddagrab` when
+available, falling back to `gdigrab`. The difference is not subtle: over five
+seconds at 30 fps, gdigrab delivered 143 frames at an uneven rate while
+ddagrab delivered exactly 150 at a constant 30. Variable frame rate inside HLS
+is what makes the picture stutter.
 
 To check what the focus detection sees in your own applications, run it on its
 own and click around:
