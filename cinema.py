@@ -30,6 +30,52 @@ PLAYLIST = "stream.m3u8"
 # ne regarde. Encoder l ecran en continu pour rien couterait cher.
 IDLE_TIMEOUT = 25.0
 
+# Peripheriques de capture audio, par ordre de preference. Les mix virtuels
+# portent ce que joue le PC ; un micro porterait la piece. On ne retient donc
+# jamais un micro par defaut : diffuser sans le vouloir le son de la piece
+# serait une mauvaise surprise. CINEMA_AUDIO impose un choix, "none" coupe.
+AUDIO_PREFERENCES = (
+    "Stream Mix (Elgato Virtual Audio)",
+    "Personal Mix (Elgato Virtual Audio)",
+    "Stereo Mix",
+    "What U Hear",
+    "Virtual Audio",
+    "VB-Audio",
+    "CABLE Output",
+)
+
+
+def list_audio_devices():
+    """Noms des peripheriques audio vus par DirectShow."""
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow",
+             "-i", "dummy"],
+            capture_output=True, text=True, timeout=20).stderr
+    except Exception:
+        return []
+    names = []
+    for line in out.splitlines():
+        if "(audio)" in line:
+            first = line.find(chr(34))
+            last = line.find(chr(34), first + 1)
+            if first >= 0 and last > first:
+                names.append(line[first + 1:last])
+    return names
+
+
+def pick_audio_device():
+    forced = os.environ.get("CINEMA_AUDIO", "").strip()
+    if forced:
+        return None if forced.lower() in ("none", "off", "0") else forced
+    found = list_audio_devices()
+    for wanted in AUDIO_PREFERENCES:
+        for name in found:
+            if wanted.lower() in name.lower():
+                return name
+    return None
+
+
 _lock = threading.Lock()
 _state = {"proc": None, "dir": None, "last_seen": 0.0, "encoder": None}
 
@@ -93,6 +139,11 @@ def start(monitor, bitrate="6M", fps=30):
             "-video_size", "%dx%d" % (int(monitor["width"]), int(monitor["height"])),
             "-i", "desktop",
         ]
+
+        device = pick_audio_device()
+        if device:
+            cmd += ["-f", "dshow", "-i", "audio=" + device]
+
         cmd += _pick_encoder()
         cmd += [
             "-pix_fmt", "yuv420p",
@@ -100,6 +151,13 @@ def start(monitor, bitrate="6M", fps=30):
             # sans reference et le lecteur affiche un ecran gris.
             "-g", str(fps * SEGMENT_SECONDS), "-sc_threshold", "0",
             "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bitrate,
+        ]
+        if device:
+            # Sans -map explicite, ffmpeg ne prendrait qu une piste par type et
+            # le choix depend de l ordre des entrees.
+            cmd += ["-map", "0:v", "-map", "1:a",
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+        cmd += [
             "-f", "hls",
             "-hls_time", str(SEGMENT_SECONDS),
             "-hls_list_size", "4",

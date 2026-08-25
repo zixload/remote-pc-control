@@ -23,6 +23,27 @@ raises the keyboard when `focus()` happens inside a real user gesture. A timer
 that notices "the PC is in a text field" cannot raise it on its own, so the badge
 gives you the gesture to make.
 
+## Gestures
+
+| Gesture | Effect |
+| --- | --- |
+| Tap | Left click |
+| Two taps, same spot | Right click |
+| Press and hold, then move | Drag: move a window, select text |
+| Two fingers, slide | Scroll wheel |
+| Two fingers, spread | Zoom the view |
+| One finger, slide when zoomed | Pan the view |
+
+Pinch and two-finger scroll use the same number of fingers, so they are told
+apart by the movement itself: a distance that changes clearly is a pinch, a
+midpoint that travels while the distance holds is a scroll. Whichever crosses
+its threshold first locks the gesture until you lift, otherwise it would waver
+mid-move.
+
+The left click of the first tap is sent immediately, so a right click is always
+preceded by a left one. Holding every click for 300ms to watch for a second
+would add that delay to everything, which is felt at once on a remote control.
+
 ## Requirements
 
 Windows, Python 3.10 or later, and a phone on the same network.
@@ -76,7 +97,10 @@ written and buffered. That rules out interaction, which is exactly why this
 mode drops it. ffmpeg only runs while the phone is asking for segments and
 stops on its own about 25 seconds after you leave.
 
-There is no sound yet — the capture is video only.
+Sound is captured too, from a virtual audio device when the machine has one:
+Elgato Virtual Audio, Stereo Mix, VB-Cable and the like. A microphone is never
+picked by default - broadcasting the room by accident would be a poor surprise.
+`CINEMA_AUDIO` names a device explicitly, or `none` turns sound off.
 
 To check what the focus detection sees in your own applications, run it on its
 own and click around:
@@ -107,3 +131,4 @@ not written for exposure.
 
 Moving the mouse into a screen corner triggers pyautogui's failsafe and stops
 input immediately.
+

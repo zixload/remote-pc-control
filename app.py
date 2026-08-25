@@ -105,6 +105,9 @@ MAIN_PAGE = """
     display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4)}
   #typeBadge.shown{display:block}
   body.typing #typeBadge{background:rgba(30,90,45,0.8)}
+  /* Glisser en cours : la poignee vire au vert, seul repere possible
+     puisqu il n y a pas de curseur visible sur le telephone. */
+  body.dragging #handle{background:rgba(40,110,60,0.88)}
 </style></head>
 <body>
 <div id="viewport">
@@ -182,11 +185,58 @@ function isControlTouch(touch){
             touch.target.closest('#controls, #handle, #typeBadge, #ghost'));
 }
 
+/* ---- gestes ----
+   Un doigt : deplacement de la vue, tapotement = clic, appui long = glisser.
+   Deux doigts : pincement pour zoomer, ou glissement pour la molette.
+
+   Les deux gestes a deux doigts partagent le meme nombre de doigts, on les
+   separe donc au mouvement : un ecart qui change nettement est un pincement,
+   un milieu qui se deplace sans que l ecart bouge est un defilement. Le
+   premier qui franchit son seuil verrouille le mode jusqu au relachement,
+   sinon le geste hesiterait en cours de route. */
+const SCROLL_STEP = 34;      /* pixels de glissement par cran de molette */
+const LONG_PRESS_MS = 500;
+let twoMode = null, twoStart = null, scrollAcc = 0;
+let longPress = null, dragMode = false, lastMoveSent = 0;
+
+function midClient(t1, t2){
+  return {x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2};
+}
+function frac(cx, cy){
+  const r = screenImg.getBoundingClientRect();
+  return {x: (cx - r.left) / r.width, y: (cy - r.top) / r.height};
+}
+function inScreen(f){ return f.x >= 0 && f.x <= 1 && f.y >= 0 && f.y <= 1; }
+
+function sendScroll(amount, f){
+  fetch('/scroll', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({amount: amount, x: f.x, y: f.y})});
+}
+function sendMouse(action, f){
+  const body = {action: action};
+  if (f) { body.x = f.x; body.y = f.y; }
+  fetch('/mouse', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+}
+function cancelLongPress(){
+  if (longPress) { clearTimeout(longPress); longPress = null; }
+}
+function endDrag(){
+  if (!dragMode) return;
+  dragMode = false;
+  document.body.classList.remove('dragging');
+  sendMouse('up');
+}
+
 viewport.addEventListener('touchstart', e => {
   if (document.body.classList.contains('cinema')) return;
   if (isControlTouch(e.touches[0])) { dragStart = null; return; }
   if (e.touches.length === 2) {
-    pinchStartDist = dist(e.touches[0], e.touches[1]);
+    cancelLongPress();
+    twoStart = {d: dist(e.touches[0], e.touches[1]), m: midClient(e.touches[0], e.touches[1])};
+    twoMode = null;
+    scrollAcc = 0;
+    pinchStartDist = twoStart.d;
     pinchStartScale = scale;
     dragStart = null;
   } else if (e.touches.length === 1) {
@@ -194,6 +244,20 @@ viewport.addEventListener('touchstart', e => {
     dragStartTxTy = {x: tx, y: ty};
     moved = false;
     touchStartTime = Date.now();
+    cancelLongPress();
+    const f = frac(dragStart.x, dragStart.y);
+    if (inScreen(f)) {
+      /* Appui long : on enfonce le bouton et on ne le relache qu au lever du
+         doigt. C est ce qui permet de trainer une fenetre ou de selectionner
+         du texte, impossible avec un clic seul. */
+      longPress = setTimeout(() => {
+        longPress = null;
+        if (moved) return;
+        dragMode = true;
+        document.body.classList.add('dragging');
+        sendMouse('down', f);
+      }, LONG_PRESS_MS);
+    }
   }
 }, {passive: true});
 
@@ -201,8 +265,30 @@ viewport.addEventListener('touchmove', e => {
   if (document.body.classList.contains('cinema')) return;
   if (isControlTouch(e.touches[0])) return;
   e.preventDefault();
-  if (e.touches.length === 2) {
+
+  if (e.touches.length === 2 && twoStart) {
     const d = dist(e.touches[0], e.touches[1]);
+    const mc = midClient(e.touches[0], e.touches[1]);
+    if (twoMode === null) {
+      if (Math.abs(d - twoStart.d) > 28) twoMode = 'pinch';
+      else if (Math.abs(mc.y - twoStart.m.y) > 18) twoMode = 'scroll';
+    }
+
+    if (twoMode === 'scroll') {
+      scrollAcc += mc.y - twoStart.m.y;
+      twoStart.m = mc;
+      const crans = Math.trunc(scrollAcc / SCROLL_STEP);
+      if (crans !== 0) {
+        scrollAcc -= crans * SCROLL_STEP;
+        const f = frac(mc.x, mc.y);
+        /* Doigts vers le bas = contenu vers le bas = molette vers le haut,
+           comme le defilement naturel d iOS. */
+        if (inScreen(f)) sendScroll(crans, f);
+      }
+      return;
+    }
+    if (twoMode !== 'pinch') return;
+
     const m = mid(e.touches[0], e.touches[1]);
     const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchStartScale * (d / pinchStartDist)));
     const localX = (m.x - tx) / scale, localY = (m.y - ty) / scale;
@@ -210,10 +296,27 @@ viewport.addEventListener('touchmove', e => {
     tx = m.x - localX * scale;
     ty = m.y - localY * scale;
     applyTransform();
-  } else if (e.touches.length === 1 && dragStart) {
+    return;
+  }
+
+  if (e.touches.length === 1 && dragStart) {
     const dx = e.touches[0].clientX - dragStart.x;
     const dy = e.touches[0].clientY - dragStart.y;
-    if (Math.hypot(dx, dy) > 8) moved = true;
+    if (Math.hypot(dx, dy) > 8) {
+      moved = true;
+      if (!dragMode) cancelLongPress();
+    }
+
+    if (dragMode) {
+      const now = Date.now();
+      if (now - lastMoveSent > 60) {     /* on n inonde pas le reseau */
+        lastMoveSent = now;
+        const f = frac(e.touches[0].clientX, e.touches[0].clientY);
+        if (inScreen(f)) sendMouse('move', f);
+      }
+      return;
+    }
+
     if (scale > 1 || moved) {
       tx = dragStartTxTy.x + dx;
       ty = dragStartTxTy.y + dy;
@@ -226,28 +329,34 @@ viewport.addEventListener('touchend', e => {
   if (document.body.classList.contains('cinema')) { e.preventDefault(); exitCinema(); return; }
   if (isControlTouch(e.changedTouches[0])) return;
   e.preventDefault();
+  cancelLongPress();
+
+  if (e.touches.length < 2) { twoMode = null; twoStart = null; }
+
+  if (dragMode) {
+    endDrag();
+    dragStart = null;
+    return;
+  }
+
   if (e.touches.length === 0 && dragStart && !moved && Date.now() - touchStartTime < 400) {
-    const r = screenImg.getBoundingClientRect();
-    const fx = (dragStart.x - r.left) / r.width;
-    const fy = (dragStart.y - r.top) / r.height;
-    if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) {
-      /* Deux tapotements rapproches au meme endroit valent un clic droit.
-         Le clic gauche du premier tapotement est envoye tout de suite :
-         retarder chaque clic de 300 ms pour guetter un second ajouterait
-         ce delai a toutes les interactions, ce qui se sent tout de suite
-         sur une commande a distance. */
+    const f = frac(dragStart.x, dragStart.y);
+    if (inScreen(f)) {
+      /* Deux tapotements rapproches au meme endroit valent un clic droit. Le
+         clic gauche du premier part tout de suite : retarder chaque clic de
+         300 ms pour guetter un second ajouterait ce delai a toutes les
+         interactions, ce qui se sent aussitot sur une commande a distance. */
       const now = Date.now();
-      const proche = Math.hypot(dragStart.x - lastTap.x,
-                                dragStart.y - lastTap.y) < 40;
+      const proche = Math.hypot(dragStart.x - lastTap.x, dragStart.y - lastTap.y) < 40;
       if (now - lastTap.t < 320 && proche) {
-        sendClick(fx, fy, 'right');
+        sendClick(f.x, f.y, 'right');
         lastTap.t = 0;          /* un troisieme tapotement repart de zero */
       } else {
-        sendClick(fx, fy, 'left');
+        sendClick(f.x, f.y, 'left');
         lastTap = {t: now, x: dragStart.x, y: dragStart.y};
         /* Si le PC etait deja dans un champ texte, on ouvre le clavier
            maintenant : on est encore dans le geste, seule fenetre ou iOS
-           l'autorise. Attendre la reponse du serveur la refermerait. */
+           l autorise. Attendre la reponse du serveur le refermerait. */
         if (pcTextField) startTyping();
       }
     }
@@ -665,6 +774,41 @@ def focus_state():
         return jsonify(ok=False), 401
     return jsonify(focus_detect.text_field_focused())
 
+
+def _to_screen(data):
+    """Coordonnees fractionnaires du telephone -> pixels de l ecran choisi."""
+    mon = MONITORS[current_monitor["idx"]]
+    return (mon["left"] + int(data["x"] * mon["width"]),
+            mon["top"] + int(data["y"] * mon["height"]))
+
+
+@app.route("/scroll", methods=["POST"])
+def scroll():
+    if not logged_in():
+        return jsonify(ok=False), 401
+    data = request.get_json()
+    # La molette va a la fenetre sous le curseur, pas a celle qui a le focus :
+    # sans deplacer la souris, le defilement partirait au mauvais endroit.
+    if data.get("x") is not None:
+        pyautogui.moveTo(*_to_screen(data))
+    pyautogui.scroll(int(data.get("amount", 0)))
+    return jsonify(ok=True)
+
+
+@app.route("/mouse", methods=["POST"])
+def mouse():
+    """Bouton maintenu, pour trainer une fenetre ou selectionner du texte."""
+    if not logged_in():
+        return jsonify(ok=False), 401
+    data = request.get_json()
+    action = data.get("action")
+    if data.get("x") is not None:
+        pyautogui.moveTo(*_to_screen(data))
+    if action == "down":
+        pyautogui.mouseDown(button=data.get("button", "left"))
+    elif action == "up":
+        pyautogui.mouseUp(button=data.get("button", "left"))
+    return jsonify(ok=True)
 
 @app.route("/cinema")
 def cinema_page():
