@@ -10,7 +10,7 @@ import pyautogui
 
 import focus_detect
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, session
-from PIL import Image
+from PIL import Image, ImageDraw
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
@@ -41,19 +41,29 @@ LOGIN_PAGE = """
 
 MAIN_PAGE = """
 <!doctype html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<!-- viewport-fit=cover : le contenu s etend sous l encoche et sous la barre
+     d etat, au lieu de s arreter a leurs marges. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<!-- black-translucent : la barre d etat devient transparente et la page passe
+     dessous. iOS n autorise jamais une page web a masquer l heure et la
+     batterie, mais au moins rien ne reste en noir opaque au-dessus. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.png">
 <title>Remote PC</title>
 <style>
   html,body{margin:0;height:100vh;height:100dvh;background:#000;overflow:hidden;font-family:sans-serif;color:#eee}
   #viewport{position:fixed;inset:0;height:100vh;height:100dvh;overflow:hidden;background:#000;touch-action:none}
   #screen{position:absolute;top:0;left:0;width:100%;transform-origin:0 0}
-  #handle{position:absolute;right:10px;bottom:10px;width:46px;height:46px;border-radius:50%;
+  #handle{position:absolute;right:10px;
+    bottom:calc(10px + env(safe-area-inset-bottom,0px));width:46px;height:46px;border-radius:50%;
     background:rgba(20,20,20,0.5);color:#fff;border:1px solid rgba(255,255,255,0.3);
     font-size:1.4em;display:flex;align-items:center;justify-content:center;z-index:20}
-  #controls{position:absolute;left:0;right:0;bottom:0;z-index:15;
+  #controls{position:absolute;left:0;right:0;z-index:15;
+    bottom:env(safe-area-inset-bottom,0px);
     background:rgba(15,15,15,0.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
     padding:8px;display:flex;flex-wrap:wrap;gap:6px;
     transition:opacity .25s ease, transform .25s ease}
@@ -382,6 +392,51 @@ def index():
     if not logged_in():
         return redirect("/login")
     return render_template_string(MAIN_PAGE)
+
+
+# ======================
+# Installation sur l ecran d accueil
+# ======================
+# Sur iPhone, requestFullscreen() n existe pas : seul un element <video>
+# obtient un vrai plein ecran, ce que YouTube exploite. Un flux MJPEG dans une
+# balise <img> n y a pas droit. Le seul moyen de se debarrasser de la barre
+# d onglets de Safari est donc d installer la page sur l ecran d accueil :
+# lancee depuis son icone, elle s ouvre sans aucune interface de navigateur.
+
+
+@app.route("/manifest.json")
+def manifest():
+    return jsonify({
+        "name": "Remote PC",
+        "short_name": "Remote PC",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        # any : laisse le telephone suivre sa propre rotation. iOS ignore de
+        # toute facon le verrouillage d orientation demande par une page web.
+        "orientation": "any",
+        "icons": [{"src": "/icon.png", "sizes": "180x180", "type": "image/png"}],
+    })
+
+
+@app.route("/icon.png")
+def icon():
+    """Icone d ecran d accueil, dessinee plutot que livree en binaire."""
+    size = 180
+    img = Image.new("RGB", (size, size), (14, 14, 16))
+    draw = ImageDraw.Draw(img)
+    # Un ecran, et un curseur dessus.
+    draw.rounded_rectangle([size * 0.16, size * 0.22, size * 0.84, size * 0.62],
+                           radius=size // 18, outline=(235, 235, 235),
+                           width=max(3, size // 30))
+    draw.rounded_rectangle([size * 0.42, size * 0.62, size * 0.58, size * 0.72],
+                           radius=size // 40, fill=(235, 235, 235))
+    draw.rounded_rectangle([size * 0.28, size * 0.72, size * 0.72, size * 0.78],
+                           radius=size // 40, fill=(235, 235, 235))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(buf.getvalue(), mimetype="image/png")
 
 
 def gen_frames():

@@ -47,6 +47,20 @@ It prints the address to open on your phone and the PIN. Both are configurable
 through environment variables: `REMOTE_PIN`, `STREAM_WIDTH`, `JPEG_QUALITY`,
 `FRAME_DELAY`.
 
+## Full screen on iPhone
+
+Open the address in Safari, then **Share → Add to Home Screen**. Launched from
+that icon, the page opens with no address bar and no tab bar, in either
+orientation, and looks like an app.
+
+That detour exists because `requestFullscreen()` is not available on iPhone
+Safari — only a `<video>` element can take over the screen there, which is how
+YouTube does it. A screen stream drawn into an `<img>` has no such option, so
+the home screen route is the only way to be rid of Safari's chrome.
+
+The clock and battery stay visible: iOS never lets a web page hide its status
+bar. The page does draw underneath it rather than stopping short of it.
+
 To check what the focus detection sees in your own applications, run it on its
 own and click around:
 
