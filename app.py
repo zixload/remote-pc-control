@@ -72,7 +72,7 @@ MAIN_PAGE = """
     border:0;padding:0;font-size:16px;z-index:1}
   /* 16px : en dessous, Safari zoome automatiquement sur le champ focalise. */
   #typeBadge{position:absolute;left:50%;transform:translateX(-50%);bottom:74px;
-    z-index:25;padding:10px 18px;border-radius:22px;border:1px solid rgba(255,255,255,0.25);
+    z-index:25;padding:8px 14px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
     background:rgba(20,20,20,0.72);backdrop-filter:blur(8px);color:#fff;font-size:0.9em;
     display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4)}
   #typeBadge.shown{display:block}
@@ -98,7 +98,7 @@ MAIN_PAGE = """
     </div>
   </div>
   <button id="handle" onclick="toggleControls()">&#8942;</button>
-  <div id="typeBadge" onclick="startTyping()">&#9000; Appuie pour ecrire</div>
+  <div id="typeBadge" onclick="startTyping()">&#9000; Type</div>
   <input id="ghost" autocomplete="off" autocorrect="off" autocapitalize="off"
          spellcheck="false" enterkeyhint="enter">
 </div>
@@ -341,15 +341,12 @@ ghost.addEventListener('keydown', e => {
 });
 
 function updateBadge(){
-  if (typing) {
-    badge.textContent = '⌨ Clavier actif — Entree valide';
-    badge.classList.add('shown');
-  } else if (pcTextField) {
-    badge.textContent = '⌨ Appuie pour ecrire';
-    badge.classList.add('shown');
-  } else {
-    badge.classList.remove('shown');
-  }
+  /* Regle unique : hors d'un champ de saisie, aucun badge. Tester d'abord
+     l'etat du clavier le laissait affiche quand le PC quittait le champ
+     alors que le clavier du telephone etait encore ouvert. */
+  if (!pcTextField) { badge.classList.remove('shown'); return; }
+  badge.textContent = typing ? '⌨' : '⌨ Type';
+  badge.classList.add('shown');
 }
 
 function pollFocus(){
