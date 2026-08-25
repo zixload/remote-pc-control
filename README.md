@@ -61,6 +61,23 @@ the home screen route is the only way to be rid of Safari's chrome.
 The clock and battery stay visible: iOS never lets a web page hide its status
 bar. The page does draw underneath it rather than stopping short of it.
 
+### Cinema mode
+
+If you only want to watch — no clicking, no typing — the **Cinema** button
+serves the screen as a real HLS video stream instead of an image stream. A
+`<video>` element *can* take the whole screen on iPhone, status bar included,
+so this gives the same full screen as YouTube.
+
+It needs `ffmpeg` in your `PATH`. Hardware encoding is used when available
+(NVIDIA, AMD or Intel), falling back to libx264.
+
+The trade-off is latency: three to five seconds, the time for segments to be
+written and buffered. That rules out interaction, which is exactly why this
+mode drops it. ffmpeg only runs while the phone is asking for segments and
+stops on its own about 25 seconds after you leave.
+
+There is no sound yet — the capture is video only.
+
 To check what the focus detection sees in your own applications, run it on its
 own and click around:
 

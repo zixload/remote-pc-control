@@ -8,8 +8,10 @@ import time
 import mss
 import pyautogui
 
+import cinema
 import focus_detect
-from flask import Flask, Response, jsonify, redirect, render_template_string, request, session
+from flask import (Flask, Response, jsonify, redirect, render_template_string,
+                   request, send_from_directory, session)
 from PIL import Image, ImageDraw
 
 app = Flask(__name__)
@@ -94,6 +96,7 @@ MAIN_PAGE = """
   <div id="controls">
     <button onclick="enterCinema()">Plein ecran</button>
     <button onclick="nextMonitor()" id="monBtn">Ecran</button>
+    <button onclick="location.href='/cinema'">Cinema</button>
     <button onclick="toggleMore()">Plus &#9662;</button>
     <div id="morePanel">
       <button onclick="key('enter')">Enter</button>
@@ -373,6 +376,57 @@ pollFocus();
 """
 
 
+CINEMA_PAGE = """
+<!doctype html><html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Cinema</title>
+<style>
+  html,body{margin:0;height:100dvh;background:#000;color:#eee;font-family:sans-serif;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+  video{width:100%;max-height:70dvh;background:#000}
+  button{padding:12px 22px;font-size:1em;border-radius:10px;border:1px solid #444;
+    background:#1c1c1e;color:#fff}
+  p{opacity:.6;font-size:.85em;text-align:center;margin:0 24px;line-height:1.5}
+  a{color:#8ab4f8}
+</style></head>
+<body>
+<video id="v" playsinline webkit-playsinline controls></video>
+<button id="go">Lancer le direct</button>
+<p id="msg">Sans interaction : l ecran est diffuse en video, ce qui permet le vrai
+plein ecran d iOS. Compte trois a cinq secondes de retard.</p>
+<a href="/">Revenir a la vue interactive</a>
+<script>
+const v = document.getElementById('v'), go = document.getElementById('go'),
+      msg = document.getElementById('msg');
+
+go.addEventListener('click', async () => {
+  go.disabled = true; msg.textContent = 'Demarrage de la capture...';
+  try {
+    const r = await fetch('/cinema/start', {method:'POST'});
+    const d = await r.json();
+    if (!d.ok) { msg.textContent = d.error || 'Echec du demarrage.'; go.disabled = false; return; }
+    v.src = '/hls/stream.m3u8';
+    v.load();
+    await v.play();
+    msg.textContent = 'En direct. Utilise le bouton plein ecran du lecteur.';
+    /* Sur iPhone, seul un <video> peut prendre tout l ecran, et seulement
+       depuis un geste. On tente ici, et le bouton natif du lecteur reste le
+       recours si le geste a expire pendant le demarrage. */
+    if (v.webkitEnterFullscreen) { try { v.webkitEnterFullscreen(); } catch(e){} }
+  } catch (e) {
+    msg.textContent = 'Erreur : ' + e;
+  }
+  go.disabled = false;
+});
+
+window.addEventListener('pagehide', () => navigator.sendBeacon('/cinema/stop'));
+</script>
+</body></html>
+"""
+
+
 def logged_in():
     return session.get("ok") is True
 
@@ -592,6 +646,45 @@ def focus_state():
     if not logged_in():
         return jsonify(ok=False), 401
     return jsonify(focus_detect.text_field_focused())
+
+
+@app.route("/cinema")
+def cinema_page():
+    if not logged_in():
+        return redirect("/login")
+    return render_template_string(CINEMA_PAGE)
+
+
+@app.route("/cinema/start", methods=["POST"])
+def cinema_start():
+    if not logged_in():
+        return jsonify(ok=False), 401
+    if not cinema.ffmpeg_available():
+        return jsonify(ok=False, error="ffmpeg introuvable dans le PATH.")
+    cinema.start(MONITORS[current_monitor["idx"]])
+    if not cinema.wait_for_playlist():
+        cinema.stop()
+        return jsonify(ok=False, error="La capture n a pas demarre.")
+    return jsonify(ok=True)
+
+
+@app.route("/cinema/stop", methods=["POST"])
+def cinema_stop():
+    cinema.stop()
+    return jsonify(ok=True)
+
+
+@app.route("/hls/<path:name>")
+def hls_file(name):
+    if not logged_in():
+        return jsonify(ok=False), 401
+    out_dir = cinema.directory()
+    if not out_dir:
+        return jsonify(ok=False), 404
+    # Chaque segment reclame prolonge la diffusion : le surveillant coupe
+    # ffmpeg des que le telephone cesse de demander.
+    cinema.touch()
+    return send_from_directory(out_dir, name)
 
 
 def local_ip():
