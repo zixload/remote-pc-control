@@ -61,11 +61,6 @@ MAIN_PAGE = """
   #controls button{flex:1;min-width:42px;padding:10px 4px;font-size:0.85em;
     background:rgba(255,255,255,0.14);color:#fff;border:1px solid rgba(255,255,255,0.25);
     border-radius:8px}
-  #textPanel{display:none;width:100%;gap:6px;margin-top:6px}
-  #textPanel.shown{display:flex}
-  #textPanel input{flex:1;font-size:1em;padding:9px;border-radius:8px;border:1px solid rgba(255,255,255,0.3);
-    background:rgba(0,0,0,0.4);color:#fff}
-  #textPanel button{flex:0 0 auto;padding:9px 16px}
   #morePanel{display:none;width:100%;flex-wrap:wrap;gap:6px;margin-top:6px}
   #morePanel.shown{display:flex}
   body.cinema #controls, body.cinema #handle{display:none}
@@ -89,16 +84,8 @@ MAIN_PAGE = """
   <div id="controls">
     <button onclick="enterCinema()">Plein ecran</button>
     <button onclick="nextMonitor()" id="monBtn">Ecran</button>
-    <button onclick="zoomBy(1.4)">Zoom +</button>
-    <button onclick="zoomBy(0.7)">Zoom -</button>
-    <button onclick="startTyping()">Clavier</button>
     <button onclick="toggleMore()">Plus &#9662;</button>
-    <div id="textPanel">
-      <input id="txt" placeholder="Texte a taper...">
-      <button onclick="sendText()">Envoyer</button>
-    </div>
     <div id="morePanel">
-      <button onclick="resetZoom()">Reset vue</button>
       <button onclick="key('enter')">Enter</button>
       <button onclick="key('esc')">Esc</button>
       <button onclick="key('tab')">Tab</button>
@@ -108,7 +95,6 @@ MAIN_PAGE = """
       <button onclick="key('right')">&rarr;</button>
       <button onclick="key('backspace')">&larr;Del</button>
       <button onclick="rclick()">Clic droit</button>
-      <button onclick="toggleTextPanel()">Texte long</button>
     </div>
   </div>
   <button id="handle" onclick="toggleControls()">&#8942;</button>
@@ -139,15 +125,6 @@ function applyTransform(){
   screenImg.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
 }
 
-function zoomBy(factor){
-  const cw = viewport.clientWidth, ch = viewport.clientHeight;
-  const cx = cw / 2, cy = ch / 2;
-  const localX = (cx - tx) / scale, localY = (cy - ty) / scale;
-  scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
-  tx = cx - localX * scale;
-  ty = cy - localY * scale;
-  applyTransform();
-}
 
 function resetZoom(){ scale = 1; tx = 0; ty = 0; applyTransform(); }
 
@@ -163,6 +140,7 @@ function mid(t1, t2){
 }
 
 let pinchStartDist = 0, pinchStartScale = 1;
+let lastTap = {t: 0, x: 0, y: 0};
 let dragStart = null, dragStartTxTy = null, moved = false, touchStartTime = 0;
 
 function isControlTouch(touch){
@@ -224,11 +202,25 @@ viewport.addEventListener('touchend', e => {
     const fx = (dragStart.x - r.left) / r.width;
     const fy = (dragStart.y - r.top) / r.height;
     if (fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1) {
-      sendClick(fx, fy, 'left');
-      /* Si le PC etait deja dans un champ texte avant ce tap, on ouvre le
-         clavier tout de suite : on est encore dans le geste, seule fenetre ou
-         iOS l'autorise. Attendre la reponse du serveur la fermerait. */
-      if (pcTextField) startTyping();
+      /* Deux tapotements rapproches au meme endroit valent un clic droit.
+         Le clic gauche du premier tapotement est envoye tout de suite :
+         retarder chaque clic de 300 ms pour guetter un second ajouterait
+         ce delai a toutes les interactions, ce qui se sent tout de suite
+         sur une commande a distance. */
+      const now = Date.now();
+      const proche = Math.hypot(dragStart.x - lastTap.x,
+                                dragStart.y - lastTap.y) < 40;
+      if (now - lastTap.t < 320 && proche) {
+        sendClick(fx, fy, 'right');
+        lastTap.t = 0;          /* un troisieme tapotement repart de zero */
+      } else {
+        sendClick(fx, fy, 'left');
+        lastTap = {t: now, x: dragStart.x, y: dragStart.y};
+        /* Si le PC etait deja dans un champ texte, on ouvre le clavier
+           maintenant : on est encore dans le geste, seule fenetre ou iOS
+           l'autorise. Attendre la reponse du serveur la refermerait. */
+        if (pcTextField) startTyping();
+      }
     }
   }
   if (e.touches.length === 0) dragStart = null;
@@ -257,11 +249,10 @@ window.addEventListener('resize', applyTransform);
 applyTransform();
 
 let hideTimer = null;
-const txtInput = document.getElementById('txt');
 function showControls(){
   controls.classList.remove('hidden');
   clearTimeout(hideTimer);
-  if (document.activeElement !== txtInput) {
+  if (!document.activeElement || document.activeElement.id !== 'ghost') {
     hideTimer = setTimeout(() => controls.classList.add('hidden'), 3000);
   }
 }
@@ -271,34 +262,17 @@ function toggleControls(){
 }
 controls.addEventListener('touchstart', showControls, {passive: true});
 controls.addEventListener('click', showControls);
-txtInput.addEventListener('focus', showControls);
-txtInput.addEventListener('blur', showControls);
 showControls();
 
-function toggleTextPanel(){
-  const p = document.getElementById('textPanel');
-  const show = p.classList.toggle('shown');
-  if (show) txtInput.focus();
-  showControls();
-}
 function toggleMore(){
   document.getElementById('morePanel').classList.toggle('shown');
   showControls();
 }
-txtInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); sendText(); }
-});
 
 function rclick(){ sendClick(0.5, 0.5, 'right'); }
 function key(name){
   fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({key:name})});
-}
-function sendText(){
-  const t = document.getElementById('txt');
-  fetch('/type', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({text:t.value})});
-  t.value='';
 }
 function nextMonitor(){
   fetch('/monitor/next', {method:'POST'}).then(r => r.json()).then(d => {
