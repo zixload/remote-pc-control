@@ -60,20 +60,36 @@ MAIN_PAGE = """
   html,body{margin:0;height:100vh;height:100dvh;background:#000;overflow:hidden;font-family:sans-serif;color:#eee}
   #viewport{position:fixed;inset:0;height:100vh;height:100dvh;overflow:hidden;background:#000;touch-action:none}
   #screen{position:absolute;top:0;left:0;width:100%;transform-origin:0 0}
-  #handle{position:absolute;right:10px;
-    bottom:calc(10px + env(safe-area-inset-bottom,0px));width:46px;height:46px;border-radius:50%;
-    background:rgba(20,20,20,0.5);color:#fff;border:1px solid rgba(255,255,255,0.3);
-    font-size:1.4em;display:flex;align-items:center;justify-content:center;z-index:20}
+  /* Chaque commande est une pastille de verre, sur le modele du badge de
+     saisie : meme fond, meme flou, meme rayon. Plus de barre pleine largeur -
+     les pastilles flottent au-dessus de l'image, centrees en bas. */
+  #handle{position:absolute;right:12px;
+    bottom:calc(12px + env(safe-area-inset-bottom,0px));width:44px;height:44px;
+    border-radius:22px;background:rgba(20,20,20,0.72);color:#fff;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,0.25);box-shadow:0 4px 16px rgba(0,0,0,0.4);
+    font-size:1.3em;display:flex;align-items:center;justify-content:center;z-index:20}
   #controls{position:absolute;left:0;right:0;z-index:15;
-    bottom:env(safe-area-inset-bottom,0px);
-    background:rgba(15,15,15,0.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-    padding:8px;display:flex;flex-wrap:wrap;gap:6px;
+    bottom:calc(12px + env(safe-area-inset-bottom,0px));
+    /* Marges laterales : la poignee occupe le coin droit, on garde la
+       symetrie pour que le centrage reste franc. */
+    padding:0 56px;
+    display:flex;flex-wrap:wrap;justify-content:center;gap:8px;
     transition:opacity .25s ease, transform .25s ease}
-  #controls.hidden{opacity:0;transform:translateY(100%);pointer-events:none}
-  #controls button{flex:1;min-width:42px;padding:10px 4px;font-size:0.85em;
-    background:rgba(255,255,255,0.14);color:#fff;border:1px solid rgba(255,255,255,0.25);
-    border-radius:8px}
-  #morePanel{display:none;width:100%;flex-wrap:wrap;gap:6px;margin-top:6px}
+  #controls.hidden{opacity:0;transform:translateY(140%);pointer-events:none}
+  #controls button{flex:0 0 auto;padding:10px 16px;font-size:0.85em;color:#fff;
+    border-radius:20px;background:rgba(20,20,20,0.72);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,0.25);
+    box-shadow:0 4px 16px rgba(0,0,0,0.4);
+    -webkit-tap-highlight-color:transparent}
+  #controls button:active{background:rgba(72,72,78,0.85)}
+  /* Touches d'un seul signe : des ronds, plutot que des fleches etirees. */
+  #controls button.ico{width:44px;padding:10px 0;text-align:center}
+  /* order:-1 fait remonter le tiroir au-dessus de la rangee principale, et
+     width:100% le force sur sa propre ligne. */
+  #morePanel{order:-1;display:none;width:100%;flex-wrap:wrap;
+    justify-content:center;gap:8px}
   #morePanel.shown{display:flex}
   body.cinema #controls, body.cinema #handle{display:none}
   body.cinema #screen{height:100%;object-fit:contain}
@@ -83,7 +99,7 @@ MAIN_PAGE = """
   #ghost{position:fixed;bottom:0;left:0;width:1px;height:1px;opacity:0;
     border:0;padding:0;font-size:16px;z-index:1}
   /* 16px : en dessous, Safari zoome automatiquement sur le champ focalise. */
-  #typeBadge{position:absolute;left:50%;transform:translateX(-50%);bottom:74px;
+  #typeBadge{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(70px + env(safe-area-inset-bottom,0px));
     z-index:25;padding:8px 14px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
     background:rgba(20,20,20,0.72);backdrop-filter:blur(8px);color:#fff;font-size:0.9em;
     display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4)}
@@ -102,10 +118,10 @@ MAIN_PAGE = """
       <button onclick="key('enter')">Enter</button>
       <button onclick="key('esc')">Esc</button>
       <button onclick="key('tab')">Tab</button>
-      <button onclick="key('up')">&uarr;</button>
-      <button onclick="key('down')">&darr;</button>
-      <button onclick="key('left')">&larr;</button>
-      <button onclick="key('right')">&rarr;</button>
+      <button class="ico" onclick="key('up')">&uarr;</button>
+      <button class="ico" onclick="key('down')">&darr;</button>
+      <button class="ico" onclick="key('left')">&larr;</button>
+      <button class="ico" onclick="key('right')">&rarr;</button>
       <button onclick="key('backspace')">&larr;Del</button>
       <button onclick="rclick()">Clic droit</button>
     </div>
@@ -386,8 +402,10 @@ CINEMA_PAGE = """
   html,body{margin:0;height:100dvh;background:#000;color:#eee;font-family:sans-serif;
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
   video{width:100%;max-height:70dvh;background:#000}
-  button{padding:12px 22px;font-size:1em;border-radius:10px;border:1px solid #444;
-    background:#1c1c1e;color:#fff}
+  button{padding:12px 24px;font-size:1em;color:#fff;border-radius:22px;
+    background:rgba(20,20,20,0.72);backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.25);
+    box-shadow:0 4px 16px rgba(0,0,0,0.4)}
   p{opacity:.6;font-size:.85em;text-align:center;margin:0 24px;line-height:1.5}
   a{color:#8ab4f8}
 </style></head>
