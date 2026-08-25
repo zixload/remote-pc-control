@@ -108,6 +108,20 @@ MAIN_PAGE = """
   /* Glisser en cours : la poignee vire au vert, seul repere possible
      puisqu il n y a pas de curseur visible sur le telephone. */
   body.dragging #handle{background:rgba(40,110,60,0.88)}
+  /* Fiche d aide : meme verre que les pastilles, centree et au-dessus de
+     tout. Elle se referme en tapotant n importe ou dessus. */
+  #helpPanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    z-index:30;display:none;max-width:min(420px,86vw);max-height:76dvh;overflow:auto;
+    padding:18px 20px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
+    background:rgba(18,18,20,0.9);backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);box-shadow:0 8px 40px rgba(0,0,0,0.6);
+    font-size:0.9em;line-height:1.5}
+  #helpPanel.shown{display:block}
+  #helpPanel h3{margin:0 0 12px;font-size:1em;font-weight:600}
+  #helpPanel dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:7px 12px}
+  #helpPanel dt{color:#fff;white-space:nowrap}
+  #helpPanel dd{margin:0;opacity:.62}
+  #helpPanel .close{margin-top:14px;text-align:center;opacity:.5;font-size:.85em}
 </style></head>
 <body>
 <div id="viewport">
@@ -116,6 +130,7 @@ MAIN_PAGE = """
     <button onclick="enterCinema()">Plein ecran</button>
     <button onclick="nextMonitor()" id="monBtn">Ecran</button>
     <button onclick="location.href='/cinema'">Cinema</button>
+    <button class="ico" onclick="toggleHelp()">i</button>
     <button onclick="toggleMore()">Plus &#9662;</button>
     <div id="morePanel">
       <button onclick="key('enter')">Enter</button>
@@ -130,6 +145,23 @@ MAIN_PAGE = """
     </div>
   </div>
   <button id="handle" onclick="toggleControls()">&#8942;</button>
+  <div id="helpPanel" onclick="toggleHelp()">
+    <h3>Comment ca marche</h3>
+    <dl>
+      <dt>Tapoter</dt><dd>clic gauche</dd>
+      <dt>Deux tapotements</dt><dd>clic droit, au meme endroit</dd>
+      <dt>Appui long puis glisser</dt><dd>garde le bouton enfonce : deplacer une
+        fenetre, selectionner du texte</dd>
+      <dt>Deux doigts qui glissent</dt><dd>molette</dd>
+      <dt>Pincer</dt><dd>zoomer la vue</dd>
+      <dt>Un doigt, vue zoomee</dt><dd>deplacer la vue</dd>
+      <dt>Badge clavier</dt><dd>apparait quand le PC est dans un champ texte ;
+        appuyer ouvre le clavier du telephone</dd>
+      <dt>Cinema</dt><dd>diffusion video avec son, vrai plein ecran, sans
+        interaction et avec quelques secondes de retard</dd>
+    </dl>
+    <div class="close">Tapoter pour fermer</div>
+  </div>
   <div id="typeBadge" onclick="startTyping()">&#9000; Type</div>
   <input id="ghost" autocomplete="off" autocorrect="off" autocapitalize="off"
          spellcheck="false" enterkeyhint="enter">
@@ -182,7 +214,7 @@ function isControlTouch(touch){
      donc startTyping() n'etait jamais appele - et le clic partait au PC, ce qui
      sortait justement du champ texte ou l'on voulait ecrire. */
   return !!(touch && touch.target && touch.target.closest &&
-            touch.target.closest('#controls, #handle, #typeBadge, #ghost'));
+            touch.target.closest('#controls, #handle, #typeBadge, #ghost, #helpPanel'));
 }
 
 /* ---- gestes ----
@@ -404,6 +436,11 @@ showControls();
 
 function toggleMore(){
   document.getElementById('morePanel').classList.toggle('shown');
+  showControls();
+}
+
+function toggleHelp(){
+  document.getElementById('helpPanel').classList.toggle('shown');
   showControls();
 }
 
