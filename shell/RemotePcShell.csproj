@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- For NotifyIcon only: the WinForms notification-area icon is the
+         same Shell_NotifyIcon one would write by hand, context menu
+         included. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>RemotePc.Shell</RootNamespace>
+    <AssemblyName>Remote PC</AssemblyName>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Remote PC</Product>
+    <Description>Launches and watches the remote control server.</Description>
+    <SatelliteResourceLanguages>en;fr</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms adds System.Windows.Forms to the implicit usings,
+         which makes Application and UserControl ambiguous with their WPF
+         namesakes. Only TrayIcon.cs touches WinForms, through an alias. -->
+    <Using Remove="System.Windows.Forms" />
+    <!-- Same for System.Drawing: Brush and Brushes live there too. -->
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <!-- Draws the address QR on the interface side, so the Python server
+         carries no extra dependency of its own. -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="icon.ico" />
+  </ItemGroup>
+
+</Project>

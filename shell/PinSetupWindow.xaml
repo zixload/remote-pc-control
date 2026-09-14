@@ -1,0 +1,54 @@
+<ui:FluentWindow x:Class="RemotePc.Shell.PinSetupWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="Choose a PIN" Height="430" Width="470"
+                 ResizeMode="NoResize"
+                 WindowStartupLocation="CenterScreen"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="Mica">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Remote PC" ShowMaximize="False" ShowMinimize="False" />
+
+        <StackPanel Grid.Row="1" Margin="28,8,28,24">
+            <TextBlock Text="Choose your PIN" FontSize="20" FontWeight="SemiBold" />
+
+            <TextBlock Margin="0,10,0,0" FontSize="12.5" Opacity="0.75" TextWrapping="Wrap"
+                       Text="This PIN is the only thing standing between the network and full mouse and keyboard control of this PC. It is asked once and kept on this machine." />
+
+            <TextBlock Margin="0,20,0,6" FontSize="12" Opacity="0.6" Text="Eight digits or more" />
+            <ui:TextBox x:Name="PinBox" FontSize="20" MaxLength="24"
+                        PlaceholderText="12345678"
+                        TextChanged="OnPinChanged" />
+
+            <TextBlock x:Name="Hint" Margin="0,8,0,0" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{DynamicResource MutedBrush}"
+                       Text="Digits only. Eight of them put a brute-force search out of reach." />
+
+            <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                <ui:Button x:Name="GenerateButton" Click="OnGenerate"
+                           AutomationProperties.Name="Generate a random PIN">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="ArrowSync24" FontSize="14" />
+                        <TextBlock Text="Generate one for me" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                </ui:Button>
+            </StackPanel>
+
+            <TextBlock Margin="0,20,0,0" FontSize="11.5" Opacity="0.55" TextWrapping="Wrap"
+                       Text="You will read it off the home page whenever you need it, next to the QR code — there is no need to memorise it." />
+
+            <ui:Button x:Name="OkButton" Appearance="Primary" Margin="0,22,0,0"
+                       HorizontalAlignment="Right" MinWidth="130" IsEnabled="False"
+                       Click="OnConfirm">
+                <TextBlock Text="Use this PIN" />
+            </ui:Button>
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

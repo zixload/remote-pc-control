@@ -1,0 +1,39 @@
+<Application x:Class="RemotePc.Shell.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <!-- WPF-UI gives the real Fluent 2 controls: the dimensions, press
+                 animations and colours of WinUI3, not a hand-made lookalike. -->
+            <ResourceDictionary.MergedDictionaries>
+                <ui:ThemesDictionary Theme="Dark" />
+                <ui:ControlsDictionary />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Palette taken from Umbra so the two applications look related:
+                 content background #121212, side pane #1F1F25 (faintly blue,
+                 not a neutral grey), alert accent #E0796A. -->
+            <SolidColorBrush x:Key="ApplicationBackgroundBrush" Color="#1F1F25" />
+            <SolidColorBrush x:Key="ShellPaneBrush" Color="#1F1F25" />
+            <SolidColorBrush x:Key="ShellContentBrush" Color="#121212" />
+            <SolidColorBrush x:Key="DangerBrush" Color="#E0796A" />
+            <SolidColorBrush x:Key="WarnBrush" Color="#E8C77B" />
+            <SolidColorBrush x:Key="OkBrush" Color="#7DC98F" />
+            <SolidColorBrush x:Key="MutedBrush" Color="#8E8E99" />
+
+            <!-- A bare TextBlock does not always inherit the ambient
+                 Foreground, depending on the tree it is injected into: without
+                 this global style some labels come out black on a dark
+                 background. -->
+            <Style TargetType="{x:Type TextBlock}">
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            </Style>
+
+            <Style TargetType="{x:Type Slider}" BasedOn="{StaticResource {x:Type Slider}}">
+                <Setter Property="IsMoveToPointEnabled" Value="True" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

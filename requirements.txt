@@ -3,3 +3,4 @@ mss
 pyautogui
 pillow
 comtypes
+flask-sock

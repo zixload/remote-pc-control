@@ -1,0 +1,226 @@
+<UserControl x:Class="RemotePc.Shell.Pages.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <UserControl.Resources>
+        <!-- One CardControl per setting, the way the Windows Settings app and
+             Umbra lay them out: icon, title, one line of explanation, and the
+             control itself pinned to the right edge. -->
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="4,14,0,8" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
+        </Style>
+        <Style x:Key="RowDescription" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Opacity" Value="0.6" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+    </UserControl.Resources>
+
+    <StackPanel>
+        <TextBlock Text="Access" Style="{StaticResource SectionTitle}" Margin="4,0,0,8" />
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Key24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="PIN" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="The only barrier before full control of the PC" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:TextBox x:Name="PinBox" Width="150" PlaceholderText="1312" />
+        </ui:CardControl>
+
+        <ui:CardControl>
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="PlugConnected24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Port" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="The port the server listens on" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="PortBox" Width="150" Minimum="1024" Maximum="65535"
+                          SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <TextBlock Text="Interactive stream" Style="{StaticResource SectionTitle}" />
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="ArrowAutofitWidth24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Width" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="In pixels. Wider costs network bandwidth" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="WidthBox" Width="150" Minimum="320" Maximum="3840"
+                          SmallChange="80" SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Image24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="JPEG quality" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="1 to 95. Below 70 the text on screen starts to smear" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="QualityBox" Width="150" Minimum="1" Maximum="95"
+                          SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Timer24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Frame rate" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Frames per second aimed for by the interactive stream" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="FpsBox" Width="150" Minimum="1" Maximum="60"
+                          SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <ui:CardControl>
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Desktop24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Starting screen" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="The phone can still cycle through the others" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="MonitorBox" Width="150" Minimum="1" Maximum="8"
+                          SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <TextBlock Text="Cinema mode" Style="{StaticResource SectionTitle}" />
+
+        <!-- The full explanation lives in the tooltip: spelled out in the row
+             itself it wrapped into five narrow lines, since the combo box and
+             the button leave the header little width. -->
+        <ui:CardControl Margin="0,0,0,6"
+                        ToolTip="A virtual mix with no source assigned opens without error and carries nothing but silence, so listing the names alone will not tell you which is which. Measuring opens each device for two seconds and reports its level — leave a sound playing meanwhile.">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Speaker224" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Audio device" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Measure to hear which one actually carries sound" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <StackPanel Orientation="Horizontal">
+                <ComboBox x:Name="AudioCombo" Width="240" VerticalAlignment="Center" />
+                <ui:Button x:Name="MeasureButton" Margin="8,0,0,0" Click="OnMeasureAudio"
+                           VerticalAlignment="Center"
+                           AutomationProperties.Name="Measure the device levels">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="Pulse24" FontSize="14" />
+                        <TextBlock x:Name="MeasureText" Text="Measure" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                </ui:Button>
+            </StackPanel>
+        </ui:CardControl>
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Timer24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Frame rate" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Frames per second of the HLS video stream" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:NumberBox x:Name="CinemaFpsBox" Width="150" Minimum="15" Maximum="120"
+                          SpinButtonPlacementMode="Compact" />
+        </ui:CardControl>
+
+        <ui:CardControl>
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="TopSpeed24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Video bitrate" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="For example 6M. Higher is sharper and heavier" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:TextBox x:Name="BitrateBox" Width="150" PlaceholderText="6M" />
+        </ui:CardControl>
+
+        <TextBlock Text="Window" Style="{StaticResource SectionTitle}" />
+
+        <ui:CardControl Margin="0,0,0,6">
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="ArrowMinimize24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Keep running when closed" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Closing the window folds it into the notification area instead of stopping the server" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:ToggleSwitch x:Name="TrayToggle" />
+        </ui:CardControl>
+
+        <ui:CardControl>
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Play24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Start the server on launch" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Opening the application also starts serving" />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:ToggleSwitch x:Name="AutoStartToggle" />
+        </ui:CardControl>
+
+        <ui:InfoBar x:Name="RestartHint" Severity="Informational" IsClosable="False"
+                    IsOpen="False" Margin="0,14,0,0"
+                    Title="Settings saved"
+                    Message="The server is still running with the old values. Restart it to apply them." />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+            <ui:Button x:Name="RestartButton" Margin="0,0,10,0" Click="OnRestartServer"
+                       Visibility="Collapsed"
+                       AutomationProperties.Name="Restart the server">
+                <StackPanel Orientation="Horizontal">
+                    <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="14" />
+                    <TextBlock Text="Restart the server" Margin="8,0,0,0"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+            </ui:Button>
+            <ui:Button x:Name="SaveButton" Appearance="Primary" Click="OnSave" MinWidth="120">
+                <TextBlock Text="Save" />
+            </ui:Button>
+        </StackPanel>
+    </StackPanel>
+</UserControl>

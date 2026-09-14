@@ -1,28 +1,98 @@
 import ctypes
 import io
+import json
 import os
 import secrets
 import socket
+import subprocess
+import sys
+import threading
 import time
+from datetime import timedelta
 
 import mss
 import pyautogui
 
+import audio
 import cinema
 import focus_detect
 from flask import (Flask, Response, jsonify, redirect, render_template_string,
                    request, send_from_directory, session)
+from flask_sock import Sock
+from werkzeug.utils import secure_filename
 from PIL import Image, ImageDraw
 
-app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
+def session_key():
+    """Cookie signing key, kept on disk.
 
-PIN = os.environ.get("REMOTE_PIN") or "1312"
+    Drawn at random on every start, it invalidated the phone's cookie as soon
+    as the server restarted: the page fell back to /login and its /focus poll
+    answered 401 in a loop. With a shortcut pinned to the taskbar, that
+    restart happens several times a day.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "remote-pc-control", "secret.key")
+    try:
+        with io.open(path, "rb") as f:
+            key = f.read().strip()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_hex(32).encode("ascii")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "wb") as f:
+            f.write(key)
+    except OSError:
+        pass  # in-memory key: the PIN is retyped after a restart, no worse
+    return key
+
+
+def report_exception(exc):
+    """An exception in a route used to end up in the Werkzeug traceback
+    alone. The interface should show it in red, not have to infer it."""
+    event("ERROR", "%s : %s" % (type(exc).__name__, exc), route=request.path)
+    return jsonify(ok=False, error=str(exc)), 500
+
+
+def event(level, message, **facts):
+    """Emit a log line the interface knows how to classify.
+
+    Werkzeug writes one line per request, focus polls included, one a second:
+    in that stream a real problem goes unnoticed. Events that mean something
+    are therefore prefixed, and the interface hides everything that is not.
+    Written to stderr, like Werkzeug, so the ordering between the two sources
+    is preserved.
+    """
+    payload = " " + json.dumps(facts, ensure_ascii=False) if facts else ""
+    sys.stderr.write("@RPC|%s|%s%s\n" % (level, message, payload))
+    sys.stderr.flush()
+
+
+app = Flask(__name__)
+app.secret_key = session_key()
+app.permanent_session_lifetime = timedelta(days=30)
+app.register_error_handler(Exception, report_exception)
+sock = Sock(app)
+
+# Plus de PIN par defaut ecrit dans le depot : celui qui s y trouvait etait
+# public, donc il ne protegeait rien chez ceux qui ne le changeaient pas. Sans
+# consigne, on en tire un au hasard et on l affiche au demarrage - il faut
+# alors le lire pour s en servir, ce qui est precisement le but.
+PIN = os.environ.get("REMOTE_PIN") or "%08d" % secrets.randbelow(10 ** 8)
 STREAM_WIDTH = int(os.environ.get("STREAM_WIDTH", 1600))
 JPEG_QUALITY = int(os.environ.get("JPEG_QUALITY", 90))
 FRAME_DELAY = float(os.environ.get("FRAME_DELAY", 1 / 20))  # ~20 fps cible
 CINEMA_BITRATE = os.environ.get("CINEMA_BITRATE", "6M")
 CINEMA_FPS = int(os.environ.get("CINEMA_FPS", 30))
+
+# Un seul dossier dans les deux sens plutot qu une boite d envoi et une de
+# reception : ce qui arrive du telephone y atterrit, et tout ce qui s y trouve
+# est proposable au telephone. Une seule chose a retenir, un seul endroit a
+# ouvrir.
+FILES_DIR = os.environ.get("REMOTE_FILES") or os.path.join(
+    os.path.expanduser("~"), "Downloads", "Remote PC")
 
 pyautogui.FAILSAFE = True  # jette la souris dans un coin de l'ecran pour tout stopper
 
@@ -33,13 +103,14 @@ current_monitor = {"idx": 1}
 
 LOGIN_PAGE = """
 <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connexion</title></head><body style="font-family:sans-serif;text-align:center;margin-top:40vh;background:#111;color:#eee">
+<title>Sign in</title></head><body style="font-family:sans-serif;text-align:center;margin-top:40vh;background:#111;color:#eee">
 <form method="post">
-<h2>Code PIN</h2>
+<h2>PIN code</h2>
 <input name="pin" type="password" inputmode="numeric" autofocus style="font-size:1.5em;text-align:center;width:8em">
-<br><br><button style="font-size:1.2em;padding:8px 20px">Se connecter</button>
+<br><br><button style="font-size:1.2em;padding:8px 20px">Sign in</button>
 </form>
-{% if error %}<p style="color:#f66">Code incorrect</p>{% endif %}
+{% if error %}<p style="color:#f66">Wrong code</p>{% endif %}
+{% if wait %}<p style="color:#e8c77b">Too many attempts. Try again in {{ wait }} s.</p>{% endif %}
 </body></html>
 """
 
@@ -92,6 +163,8 @@ MAIN_PAGE = """
     box-shadow:0 4px 16px rgba(0,0,0,0.4);
     -webkit-tap-highlight-color:transparent}
   #controls button:active{background:rgba(72,72,78,0.85)}
+  #soundBtn.on{background:rgba(30,110,60,0.88);border-color:rgba(130,255,170,.65)}
+  #soundBtn.loading{opacity:.65}
   /* Touches d'un seul signe : des ronds, plutot que des fleches etirees. */
   #controls button.ico{width:44px;padding:10px 0;text-align:center}
   /* order:-1 fait remonter le tiroir au-dessus de la rangee principale, et
@@ -99,15 +172,13 @@ MAIN_PAGE = """
   #morePanel{order:-1;display:none;width:100%;flex-wrap:wrap;
     justify-content:center;gap:8px}
   #morePanel.shown{display:flex}
-  body.cinema #controls, body.cinema #handle{display:none}
-  body.cinema #screen{height:100%;object-fit:contain}
   /* Champ invisible mais reellement focalisable : iOS n'ouvre son clavier que
      pour un champ present dans la page. opacity:0 suffit, display:none ou
      visibility:hidden le rendraient infocalisable. */
   #ghost{position:fixed;bottom:0;left:0;width:1px;height:1px;opacity:0;
     border:0;padding:0;font-size:16px;z-index:1}
   /* 16px : en dessous, Safari zoome automatiquement sur le champ focalise. */
-  #typeBadge{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(70px + env(safe-area-inset-bottom,0px));
+  #typeBadge{position:absolute;left:50%;transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));
     z-index:25;padding:8px 14px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
     background:rgba(20,20,20,0.72);backdrop-filter:blur(8px);color:#fff;font-size:0.9em;
     display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4)}
@@ -130,16 +201,45 @@ MAIN_PAGE = """
   #helpPanel dt{color:#fff;white-space:nowrap}
   #helpPanel dd{margin:0;opacity:.62}
   #helpPanel .close{margin-top:14px;text-align:center;opacity:.5;font-size:.85em}
+  /* Meme boite que l aide : meme flou, meme rayon, meme largeur. Un seul
+     langage visuel pour tout ce qui se pose par-dessus l ecran distant. */
+  #filesPanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    z-index:30;display:none;width:min(420px,86vw);max-height:76dvh;overflow:auto;
+    padding:18px 20px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
+    background:rgba(18,18,20,0.9);backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);box-shadow:0 8px 40px rgba(0,0,0,0.6);
+    font-size:0.9em;line-height:1.5}
+  #filesPanel.shown{display:block}
+  #filesPanel h3{margin:0 0 12px;font-size:1em;font-weight:600}
+  #toast{position:absolute;left:50%;top:14%;transform:translateX(-50%);z-index:28;
+    padding:9px 18px;border-radius:18px;font-size:.9em;pointer-events:none;
+    background:rgba(18,18,20,0.88);border:1px solid rgba(255,255,255,0.22);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    opacity:0;transition:opacity .18s ease}
+  #toast.shown{opacity:1}
+  #filesPanel .row{display:flex;gap:8px;margin-bottom:10px}
+  #filesPanel .row button{flex:1}
+  #upProgress{min-height:1.2em;opacity:.7;font-size:.85em;margin-bottom:6px}
+  #fileList{list-style:none;margin:0;padding:0}
+  #fileList li{display:flex;align-items:center;gap:10px;padding:7px 0;
+    border-top:1px solid rgba(255,255,255,0.1)}
+  #fileList a{color:#8ab4f8;text-decoration:none;flex:1;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  #fileList .size{opacity:.5;font-size:.8em;white-space:nowrap}
+  #fileList .del{background:none;border:0;color:#e0796a;font-size:1.2em;
+    padding:0 4px;line-height:1}
+  #fileList .muted{opacity:.5;border-top:0}
 </style></head>
 <body>
 <div id="viewport">
   <img id="screen" src="/stream">
   <div id="controls">
-    <button onclick="enterCinema()">Plein ecran</button>
-    <button onclick="nextMonitor()" id="monBtn">Ecran</button>
+    <button onclick="nextMonitor()" id="monBtn">Screen</button>
     <button onclick="location.href='/cinema'">Cinema</button>
+    <button onclick="toggleSound()" id="soundBtn">Sound</button>
+    <button onclick="toggleFiles()">Files</button>
     <button class="ico" onclick="toggleHelp()">i</button>
-    <button onclick="toggleMore()">Plus &#9662;</button>
+    <button onclick="toggleMore()">More &#9662;</button>
     <div id="morePanel">
       <button onclick="key('enter')">Enter</button>
       <button onclick="key('esc')">Esc</button>
@@ -149,27 +249,44 @@ MAIN_PAGE = """
       <button class="ico" onclick="key('left')">&larr;</button>
       <button class="ico" onclick="key('right')">&rarr;</button>
       <button onclick="key('backspace')">&larr;Del</button>
-      <button onclick="rclick()">Clic droit</button>
+      <button onclick="rclick()">Right click</button>
     </div>
   </div>
   <button id="handle" onclick="toggleControls()">&#8942;</button>
   <div id="helpPanel" onclick="toggleHelp()">
-    <h3>Comment ca marche</h3>
+    <h3>How it works</h3>
     <dl>
-      <dt>Tapoter</dt><dd>clic gauche</dd>
-      <dt>Deux tapotements</dt><dd>clic droit, au meme endroit</dd>
-      <dt>Appui long puis glisser</dt><dd>garde le bouton enfonce : deplacer une
-        fenetre, selectionner du texte</dd>
-      <dt>Deux doigts qui glissent</dt><dd>molette</dd>
-      <dt>Pincer</dt><dd>zoomer la vue</dd>
-      <dt>Un doigt, vue zoomee</dt><dd>deplacer la vue</dd>
-      <dt>Badge clavier</dt><dd>apparait quand le PC est dans un champ texte ;
-        appuyer ouvre le clavier du telephone</dd>
-      <dt>Cinema</dt><dd>diffusion video avec son, vrai plein ecran, sans
-        interaction et avec quelques secondes de retard</dd>
+      <dt>Tap</dt><dd>left click</dd>
+      <dt>Two taps</dt><dd>right click, on the same spot</dd>
+      <dt>Press and hold, then move</dt><dd>keeps the button down: move a
+        window, select text</dd>
+      <dt>Two fingers sliding</dt><dd>scroll wheel</dd>
+      <dt>Pinch</dt><dd>zoom the view</dd>
+      <dt>One finger, zoomed in</dt><dd>pan the view</dd>
+      <dt>Push past the edge</dt><dd>slide sideways until the view stops, and
+        keep going: the next screen comes in. Works zoomed out too</dd>
+      <dt>Keyboard badge</dt><dd>appears when the PC is in a text field;
+        tapping it opens the phone keyboard</dd>
+      <dt>Cinema</dt><dd>video with sound, real full screen, no interaction and
+        a few seconds behind</dd>
+      <dt>Sound</dt><dd>keeps the PC audio in the interactive view; it stays a
+        few seconds behind</dd>
     </dl>
-    <div class="close">Tapoter pour fermer</div>
+    <div class="close">Tap to close</div>
   </div>
+  <div id="filesPanel">
+    <h3>Files</h3>
+    <div class="row">
+      <button onclick="filePick.click()">Send from phone</button>
+      <button onclick="loadFiles()">Refresh</button>
+    </div>
+    <div id="upProgress"></div>
+    <ul id="fileList"></ul>
+    <div class="close" onclick="toggleFiles()" style="margin-top:14px;
+         text-align:center;opacity:.5;font-size:.85em">Tap to close</div>
+  </div>
+  <input type="file" id="filePick" multiple style="display:none">
+  <div id="toast"></div>
   <div id="typeBadge" onclick="startTyping()">&#9000; Type</div>
   <input id="ghost" autocomplete="off" autocorrect="off" autocapitalize="off"
          spellcheck="false" enterkeyhint="enter">
@@ -178,7 +295,7 @@ MAIN_PAGE = """
 window.onerror = function(msg, url, line, col, err){
   const d = document.createElement('div');
   d.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#c00;color:#fff;padding:10px;font-size:13px;z-index:99999;white-space:pre-wrap;font-family:monospace';
-  d.textContent = 'Erreur JS ligne ' + line + ': ' + msg;
+  d.textContent = 'JS error, line ' + line + ': ' + msg;
   document.body.appendChild(d);
 };
 
@@ -215,6 +332,30 @@ let pinchStartDist = 0, pinchStartScale = 1;
 let lastTap = {t: 0, x: 0, y: 0};
 let dragStart = null, dragStartTxTy = null, moved = false, touchStartTime = 0;
 
+/* Pousser la vue au-dela du bord fait passer a l ecran voisin, comme si les
+   ecrans du PC etaient poses cote a cote. Cela marche aussi sans zoom : la vue
+   est alors deja a ses limites, donc tout glissement est du debordement. */
+const EDGE_SWITCH = 120;      /* pixels de debordement avant de basculer */
+let monitorTotal = 1, edgeSwitched = false;
+
+function maybeSwitchScreen(overscroll){
+  if (edgeSwitched || monitorTotal < 2) return;
+  if (Math.abs(overscroll) < EDGE_SWITCH) return;
+  edgeSwitched = true;        /* une seule bascule par glissement */
+  /* Doigt vers la gauche : on pousse l ecran courant hors du cadre par la
+     gauche, donc le suivant arrive par la droite. */
+  nextMonitor(overscroll < 0 ? 1 : -1);
+}
+
+let toastTimer = null;
+function toast(text){
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.classList.add('shown');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('shown'), 1200);
+}
+
 function isControlTouch(touch){
   /* Tout ce qui est liste ici echappe au tactile de l'ecran distant. Le badge
      en fait partie : sans cela, le tap dessus etait pris pour un tap sur
@@ -222,7 +363,7 @@ function isControlTouch(touch){
      donc startTyping() n'etait jamais appele - et le clic partait au PC, ce qui
      sortait justement du champ texte ou l'on voulait ecrire. */
   return !!(touch && touch.target && touch.target.closest &&
-            touch.target.closest('#controls, #handle, #typeBadge, #ghost, #helpPanel'));
+            touch.target.closest('#controls, #handle, #typeBadge, #ghost, #helpPanel, #filesPanel'));
 }
 
 /* ---- gestes ----
@@ -269,7 +410,6 @@ function endDrag(){
 }
 
 viewport.addEventListener('touchstart', e => {
-  if (document.body.classList.contains('cinema')) return;
   if (isControlTouch(e.touches[0])) { dragStart = null; return; }
   if (e.touches.length === 2) {
     cancelLongPress();
@@ -283,6 +423,7 @@ viewport.addEventListener('touchstart', e => {
     dragStart = {x: e.touches[0].clientX, y: e.touches[0].clientY};
     dragStartTxTy = {x: tx, y: ty};
     moved = false;
+    edgeSwitched = false;
     touchStartTime = Date.now();
     cancelLongPress();
     const f = frac(dragStart.x, dragStart.y);
@@ -302,7 +443,6 @@ viewport.addEventListener('touchstart', e => {
 }, {passive: true});
 
 viewport.addEventListener('touchmove', e => {
-  if (document.body.classList.contains('cinema')) return;
   if (isControlTouch(e.touches[0])) return;
   e.preventDefault();
 
@@ -358,15 +498,18 @@ viewport.addEventListener('touchmove', e => {
     }
 
     if (scale > 1 || moved) {
-      tx = dragStartTxTy.x + dx;
+      const wantedX = dragStartTxTy.x + dx;
+      tx = wantedX;
       ty = dragStartTxTy.y + dy;
       applyTransform();
+      /* applyTransform ramene tx dans ses bornes ; ce qu il a refuse est
+         exactement le debordement, et c est lui qui fait changer d ecran. */
+      maybeSwitchScreen(wantedX - tx);
     }
   }
 }, {passive: false});
 
 viewport.addEventListener('touchend', e => {
-  if (document.body.classList.contains('cinema')) { e.preventDefault(); exitCinema(); return; }
   if (isControlTouch(e.changedTouches[0])) return;
   e.preventDefault();
   cancelLongPress();
@@ -405,23 +548,9 @@ viewport.addEventListener('touchend', e => {
 }, {passive: false});
 
 screenImg.addEventListener('click', e => {
-  if (document.body.classList.contains('cinema')) { exitCinema(); return; }
   const r = screenImg.getBoundingClientRect();
   sendClick((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
 });
-
-function enterCinema(){
-  document.body.classList.add('cinema');
-  scale = 1; tx = 0; ty = 0;
-  screenImg.style.transform = '';
-  controls.classList.add('hidden');
-  clearTimeout(hideTimer);
-}
-function exitCinema(){
-  document.body.classList.remove('cinema');
-  resetZoom();
-  showControls();
-}
 
 window.addEventListener('resize', applyTransform);
 applyTransform();
@@ -452,19 +581,123 @@ function toggleHelp(){
   showControls();
 }
 
+/* ================= sound in the interactive view =================
+   Raw PCM over a WebSocket, scheduled into Web Audio, rather than the HLS
+   stream of cinema mode. HLS buffers whole segments, which put the sound three
+   to five seconds behind an image that arrives in real time - the two came by
+   different roads and the gap was plain to hear. See audio.py.
+
+   The first tap is not optional: iOS refuses to let a page start sound, or
+   even resume an AudioContext, outside an explicit user gesture. */
+const soundBtn = document.getElementById('soundBtn');
+let soundOn = false, soundStarting = false;
+let audioCtx = null, audioSock = null, playAt = 0;
+
+/* Marge de programmation. Trop courte, le moindre hoquet du Wi-Fi se fait
+   entendre ; trop longue, on recree le retard qu on vient d enlever. */
+const LEAD = 0.12;
+const MAX_AHEAD = 0.6;
+
+function markSoundOn(){
+  soundOn = true;
+  soundBtn.classList.add('on');
+  soundBtn.textContent = 'Sound ON';
+}
+
+function markSoundOff(label){
+  soundOn = false;
+  soundBtn.classList.remove('on');
+  soundBtn.textContent = label;
+}
+
+function playChunk(data){
+  const pcm = new Int16Array(data);
+  const frames = pcm.length / 2;
+  if (!frames) return;
+
+  /* Le tampon porte sa propre frequence : sur iPhone le contexte tourne
+     souvent a 44,1 kHz, et Web Audio reechantillonne tout seul plutot que de
+     nous obliger a le faire ici. */
+  const buf = audioCtx.createBuffer(2, frames, 48000);
+  const left = buf.getChannelData(0), right = buf.getChannelData(1);
+  for (let i = 0; i < frames; i++) {
+    left[i] = pcm[2 * i] / 32768;
+    right[i] = pcm[2 * i + 1] / 32768;
+  }
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  /* En retard : on repart de maintenant, quitte a sauter un peu de son.
+     En avance de plus d une demi-seconde : le reseau a rendu une rafale et le
+     tampon a enfle, on se recale pour ne pas garder ce retard indefiniment. */
+  if (playAt < now + 0.02 || playAt > now + MAX_AHEAD) playAt = now + LEAD;
+  src.start(playAt);
+  playAt += buf.duration;
+}
+
+function stopSound(){
+  if (audioSock) { audioSock.onclose = null; audioSock.close(); audioSock = null; }
+  playAt = 0;
+  markSoundOff('Sound');
+}
+
+async function toggleSound(){
+  if (soundStarting) return;
+  if (soundOn) { stopSound(); return; }
+
+  soundStarting = true;
+  soundBtn.classList.add('loading');
+  soundBtn.textContent = 'Sound...';
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    /* resume() doit arriver dans le geste, pas apres une attente reseau :
+       iOS considere sinon que l autorisation a expire. */
+    await audioCtx.resume();
+
+    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    audioSock = new WebSocket(scheme + location.host + '/audio');
+    audioSock.binaryType = 'arraybuffer';
+    audioSock.onmessage = e => playChunk(e.data);
+    audioSock.onopen = () => { playAt = 0; markSoundOn(); };
+    audioSock.onerror = () => markSoundOff('Retry sound');
+    audioSock.onclose = () => { if (soundOn) markSoundOff('Retry sound'); };
+  } catch (e) {
+    markSoundOff('Retry sound');
+  } finally {
+    soundStarting = false;
+    soundBtn.classList.remove('loading');
+  }
+  showControls();
+}
+
+/* Ecran verrouille ou onglet ferme : la WebSocket part avec la page, et
+   ffmpeg s arrete cote PC des que le dernier auditeur disparait. */
+window.addEventListener('pagehide', stopSound);
+
 function rclick(){ sendClick(0.5, 0.5, 'right'); }
 function key(name){
   fetch('/key', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({key:name})});
 }
-function nextMonitor(){
-  fetch('/monitor/next', {method:'POST'}).then(r => r.json()).then(d => {
-    document.getElementById('monBtn').textContent = 'Ecran ' + d.current + '/' + d.total;
+function nextMonitor(delta){
+  fetch('/monitor/next', {method:'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({delta: delta === undefined ? 1 : delta}),
+  }).then(r => r.json()).then(d => {
+    monitorTotal = d.total;
+    document.getElementById('monBtn').textContent = 'Screen ' + d.current + '/' + d.total;
     resetZoom();
+    /* La bascule peut venir d un glissement alors que la barre est masquee :
+       sans ce message, l ecran change sans qu on sache pourquoi. */
+    toast('Screen ' + d.current + ' / ' + d.total);
   });
 }
 fetch('/monitors').then(r => r.json()).then(d => {
-  document.getElementById('monBtn').textContent = 'Ecran ' + d.current + '/' + d.total;
+  monitorTotal = d.total;
+  document.getElementById('monBtn').textContent = 'Screen ' + d.current + '/' + d.total;
 });
 
 /* ================= clavier natif =================
@@ -532,14 +765,127 @@ function updateBadge(){
   badge.classList.add('shown');
 }
 
+/* Chaine de setTimeout plutot qu'un setInterval : en arriere-plan iOS met
+   les intervalles en attente puis vide la file d'un coup au retour, ce qui
+   envoyait une vingtaine de sondages dans la meme seconde. Ici le suivant
+   n'est arme qu'une fois le precedent termine, donc rien ne s'empile. */
+let focusTimer = null;
+
+function scheduleFocusPoll(delay){
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(pollFocus, delay === undefined ? 900 : delay);
+}
+
+const filePick = document.getElementById('filePick');
+filePick.addEventListener('change', () => uploadFiles(filePick.files));
+
+function toggleFiles(){
+  const panel = document.getElementById('filesPanel');
+  const show = !panel.classList.contains('shown');
+  panel.classList.toggle('shown', show);
+  if (show) loadFiles();
+}
+
+function humanSize(n){
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return Math.round(n / 1024) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+async function loadFiles(){
+  const list = document.getElementById('fileList');
+  list.innerHTML = '<li class="muted">Loading...</li>';
+  try {
+    const r = await fetch('/files');
+    if (r.status === 401) { location.href = '/login'; return; }
+    const d = await r.json();
+    list.innerHTML = '';
+    if (!d.files.length) {
+      list.innerHTML = '<li class="muted">Nothing here yet.</li>';
+      return;
+    }
+    for (const f of d.files) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      /* download + as_attachment cote serveur : sans les deux, Safari ouvre
+         l image dans l onglet au lieu de proposer de l enregistrer. */
+      a.href = '/files/get/' + encodeURIComponent(f.name);
+      a.setAttribute('download', f.name);
+      a.textContent = f.name;
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = humanSize(f.size);
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.onclick = () => removeFile(f.name);
+      li.appendChild(a); li.appendChild(size); li.appendChild(del);
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = '<li class="muted">Could not read the folder.</li>';
+  }
+}
+
+function uploadFiles(files){
+  if (!files || !files.length) return;
+  const form = new FormData();
+  for (const f of files) form.append('file', f);
+  const bar = document.getElementById('upProgress');
+
+  /* XMLHttpRequest et pas fetch : fetch ne rapporte pas l avancement de
+     l envoi, et une video de plusieurs centaines de megaoctets sans barre de
+     progression donne l impression que l application a plante. */
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/files/upload');
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable)
+      bar.textContent = 'Sending ' + Math.round(e.loaded / e.total * 100) + '%';
+  };
+  xhr.onload = () => {
+    bar.textContent = xhr.status === 200 ? 'Sent.' : 'Upload failed.';
+    filePick.value = '';
+    loadFiles();
+    setTimeout(() => { bar.textContent = ''; }, 4000);
+  };
+  xhr.onerror = () => { bar.textContent = 'Upload failed.'; };
+  bar.textContent = 'Sending 0%';
+  xhr.send(form);
+}
+
+async function removeFile(name){
+  await fetch('/files/delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name}),
+  });
+  loadFiles();
+}
+
 function pollFocus(){
-  if (document.hidden) return;
-  fetch('/focus').then(r => r.json()).then(d => {
+  if (document.hidden) { scheduleFocusPoll(); return; }
+  fetch('/focus').then(r => {
+    if (r.status === 401) {
+      /* Session expiree : sans cet arret la page sondait /focus a la seconde
+         indefiniment, en pure perte, sans jamais dire de se reconnecter. */
+      clearTimeout(focusTimer);
+      location.href = '/login';
+      return null;
+    }
+    return r.json();
+  }).then(d => {
+    if (!d) return;
     pcTextField = !!d.active;
     updateBadge();
-  }).catch(() => {});
+    scheduleFocusPoll();
+  }).catch(() => scheduleFocusPoll());
 }
-setInterval(pollFocus, 900);
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) scheduleFocusPoll(0);
+});
+
 pollFocus();
 </script>
 </body></html>
@@ -565,30 +911,30 @@ CINEMA_PAGE = """
 </style></head>
 <body>
 <video id="v" playsinline webkit-playsinline controls></video>
-<button id="go">Lancer le direct</button>
-<p id="msg">Sans interaction : l ecran est diffuse en video, ce qui permet le vrai
-plein ecran d iOS. Compte trois a cinq secondes de retard.</p>
-<a href="/">Revenir a la vue interactive</a>
+<button id="go">Start the stream</button>
+<p id="msg">No interaction: the screen is sent as video, which is what allows
+real iOS full screen. Expect three to five seconds of delay.</p>
+<a href="/">Back to the interactive view</a>
 <script>
 const v = document.getElementById('v'), go = document.getElementById('go'),
       msg = document.getElementById('msg');
 
 go.addEventListener('click', async () => {
-  go.disabled = true; msg.textContent = 'Demarrage de la capture...';
+  go.disabled = true; msg.textContent = 'Starting the capture...';
   try {
     const r = await fetch('/cinema/start', {method:'POST'});
     const d = await r.json();
-    if (!d.ok) { msg.textContent = d.error || 'Echec du demarrage.'; go.disabled = false; return; }
+    if (!d.ok) { msg.textContent = d.error || 'Failed to start.'; go.disabled = false; return; }
     v.src = '/hls/stream.m3u8';
     v.load();
     await v.play();
-    msg.textContent = 'En direct. Utilise le bouton plein ecran du lecteur.';
-    /* Sur iPhone, seul un <video> peut prendre tout l ecran, et seulement
-       depuis un geste. On tente ici, et le bouton natif du lecteur reste le
-       recours si le geste a expire pendant le demarrage. */
+    msg.textContent = 'Live. Use the player full-screen button.';
+    /* On iPhone only a <video> can take the whole screen, and only from a
+       gesture. Try here, and the player's own button stays the fallback if
+       the gesture expired while starting. */
     if (v.webkitEnterFullscreen) { try { v.webkitEnterFullscreen(); } catch(e){} }
   } catch (e) {
-    msg.textContent = 'Erreur : ' + e;
+    msg.textContent = 'Error: ' + e;
   }
   go.disabled = false;
 });
@@ -599,18 +945,82 @@ window.addEventListener('pagehide', () => navigator.sendBeacon('/cinema/stop'));
 """
 
 
+# Sans compteur, /login encaisse environ 430 essais par seconde : un PIN a
+# quatre chiffres, soit 10 000 combinaisons, tombe en une douzaine de secondes.
+# Le journal montrait deja les tentatives, mais rien ne les ralentissait.
+LOCK_AFTER = 5          # essais rates tolerés avant le premier blocage
+LOCK_SECONDS = 30       # duree du premier blocage, doublee a chaque recidive
+LOCK_MAX = 15 * 60      # plafond : inutile de bannir pour la journee
+
+_attempts = {}          # ip -> [rates, bloque_jusqu_a, duree_suivante]
+_attempts_lock = threading.Lock()
+
+
+def lock_remaining(ip):
+    """Secondes restantes avant de pouvoir reessayer, 0 si la voie est libre."""
+    with _attempts_lock:
+        entry = _attempts.get(ip)
+        if not entry:
+            return 0
+        return max(0, int(entry[1] - time.time()))
+
+
+def note_failure(ip):
+    """Compte un echec et renvoie la duree de blocage s il vient d etre pose.
+
+    Le blocage double a chaque nouvelle serie : une erreur de frappe coute
+    trente secondes, un script en coute des milliers avant d avoir parcouru
+    une fraction de l espace.
+    """
+    with _attempts_lock:
+        entry = _attempts.setdefault(ip, [0, 0.0, LOCK_SECONDS])
+        entry[0] += 1
+        if entry[0] < LOCK_AFTER:
+            return 0
+        entry[0] = 0
+        entry[1] = time.time() + entry[2]
+        posed = entry[2]
+        entry[2] = min(entry[2] * 2, LOCK_MAX)
+        return int(posed)
+
+
+def note_success(ip):
+    with _attempts_lock:
+        _attempts.pop(ip, None)
+
+
 def logged_in():
     return session.get("ok") is True
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    ip = request.remote_addr or "?"
     if request.method == "POST":
-        if request.form.get("pin") == PIN:
+        waiting = lock_remaining(ip)
+        if waiting:
+            return render_template_string(LOGIN_PAGE, error=False, wait=waiting), 429
+
+        # compare_digest plutot que == : la comparaison ne s arrete pas au
+        # premier caractere different, donc le temps de reponse ne renseigne
+        # pas sur le nombre de caracteres corrects.
+        if secrets.compare_digest(request.form.get("pin", ""), PIN):
+            note_success(ip)
+            session.permanent = True
             session["ok"] = True
+            event("INFO", "Phone connected", ip=ip)
             return redirect("/")
+
+        locked = note_failure(ip)
+        # Deliberately visible: anyone on the network can try their luck,
+        # and this is the only sign of it we would ever notice.
+        if locked:
+            event("WARN", "PIN refused - address locked out", ip=ip, seconds=locked)
+            return render_template_string(LOGIN_PAGE, error=False, wait=locked), 429
+        event("WARN", "PIN refused", ip=ip)
         return render_template_string(LOGIN_PAGE, error=True)
-    return render_template_string(LOGIN_PAGE, error=False)
+    return render_template_string(LOGIN_PAGE, error=False,
+                                  wait=lock_remaining(ip))
 
 
 @app.route("/")
@@ -702,7 +1112,13 @@ def monitors_info():
 def next_monitor():
     if not logged_in():
         return jsonify(ok=False), 401
-    current_monitor["idx"] = current_monitor["idx"] % MONITOR_COUNT + 1
+    # delta : +1 depuis le bouton, mais un debordement vers la gauche demande
+    # l ecran precedent, sinon pousser dans un sens et dans l autre reviendrait
+    # au meme et le geste n aurait aucun sens.
+    delta = (request.get_json(silent=True) or {}).get("delta", 1)
+    delta = 1 if int(delta) >= 0 else -1
+    current_monitor["idx"] = (current_monitor["idx"] - 1 + delta) % MONITOR_COUNT + 1
+    event("INFO", "Screen %d of %d" % (current_monitor["idx"], MONITOR_COUNT))
     return jsonify(ok=True, current=current_monitor["idx"], total=MONITOR_COUNT)
 
 
@@ -890,17 +1306,22 @@ def cinema_start():
     if not logged_in():
         return jsonify(ok=False), 401
     if not cinema.ffmpeg_available():
+        event("ERROR", "Cinema mode refused: ffmpeg is not in PATH")
         return jsonify(ok=False, error="ffmpeg introuvable dans le PATH.")
     cinema.start(MONITORS[current_monitor["idx"]], index=current_monitor["idx"],
                  bitrate=CINEMA_BITRATE, fps=CINEMA_FPS)
     if not cinema.wait_for_playlist():
         cinema.stop()
+        event("ERROR", "Cinema mode: the ffmpeg capture did not start")
         return jsonify(ok=False, error="La capture n a pas demarre.")
+    event("INFO", "Cinema mode started", screen=current_monitor["idx"])
     return jsonify(ok=True)
 
 
 @app.route("/cinema/stop", methods=["POST"])
 def cinema_stop():
+    if cinema.is_running():
+        event("INFO", "Cinema mode stopped")
     cinema.stop()
     return jsonify(ok=True)
 
@@ -916,6 +1337,194 @@ def hls_file(name):
     # ffmpeg des que le telephone cesse de demander.
     cinema.touch()
     return send_from_directory(out_dir, name)
+
+
+@sock.route("/audio")
+def audio_socket(ws):
+    """Diffuse le son du PC en PCM brut.
+
+    Rien n est mis en tampon ici : chaque morceau part des qu il sort de
+    ffmpeg. La seule marge est celle que le navigateur s accorde pour
+    programmer la lecture, et elle se compte en dizaines de millisecondes.
+    """
+    if not logged_in():
+        return
+    q = audio.subscribe()
+    if q is None:
+        event("ERROR", "Live sound unavailable: no ffmpeg or no audio device")
+        return
+
+    event("INFO", "Sound started", ip=request.remote_addr)
+    try:
+        while True:
+            ws.send(q.get())
+    except Exception:
+        # Le telephone a ferme l onglet, verrouille l ecran ou change de
+        # reseau : ce n est pas une panne, juste la fin de l ecoute.
+        pass
+    finally:
+        audio.unsubscribe(q)
+        event("INFO", "Sound stopped", ip=request.remote_addr)
+
+
+def files_dir():
+    """Le dossier partage, cree a la demande plutot qu au demarrage : il ne
+    doit exister que si on s en sert."""
+    os.makedirs(FILES_DIR, exist_ok=True)
+    return FILES_DIR
+
+
+def safe_name(name):
+    """Ramene un nom de fichier a quelque chose qui ne peut pas sortir du
+    dossier. secure_filename vide certains noms entierement - un nom purement
+    accentue, par exemple - d ou le repli sur un nom neutre."""
+    cleaned = secure_filename(name or "")
+    return cleaned or "file"
+
+
+def human_size(n):
+    """Taille lisible. Un fichier de 26 octets annonce en kilo-octets entiers
+    affichait 0, ce qui laissait croire a un envoi vide."""
+    if n < 1024:
+        return "%d B" % n
+    if n < 1048576:
+        return "%d KB" % round(n / 1024)
+    if n < 1073741824:
+        return "%.1f MB" % (n / 1048576)
+    return "%.2f GB" % (n / 1073741824)
+
+
+def unique_path(directory, name):
+    """Ajoute un rang plutot que d ecraser : deux photos prises a la suite
+    portent souvent le meme nom, et perdre la premiere serait une surprise
+    desagreable."""
+    base, ext = os.path.splitext(name)
+    candidate, n = name, 2
+    while os.path.exists(os.path.join(directory, candidate)):
+        candidate = "%s (%d)%s" % (base, n, ext)
+        n += 1
+    return os.path.join(directory, candidate), candidate
+
+
+@app.route("/files")
+def files_list():
+    if not logged_in():
+        return jsonify(ok=False), 401
+    directory = files_dir()
+    items = []
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        info = os.stat(path)
+        items.append({"name": name, "size": info.st_size, "at": info.st_mtime})
+    # Le plus recent en premier : c est presque toujours celui qu on vient de
+    # deposer et qu on veut recuperer.
+    items.sort(key=lambda i: i["at"], reverse=True)
+    return jsonify(ok=True, files=items, dir=directory)
+
+
+@app.route("/files/upload", methods=["POST"])
+def files_upload():
+    if not logged_in():
+        return jsonify(ok=False), 401
+    directory = files_dir()
+    saved = []
+    for item in request.files.getlist("file"):
+        if not item.filename:
+            continue
+        path, name = unique_path(directory, safe_name(item.filename))
+        item.save(path)
+        saved.append(name)
+        event("INFO", "File received", name=name, size=human_size(os.path.getsize(path)))
+    if not saved:
+        return jsonify(ok=False, error="No file in the request."), 400
+    return jsonify(ok=True, saved=saved)
+
+
+@app.route("/files/get/<path:name>")
+def files_get(name):
+    if not logged_in():
+        return jsonify(ok=False), 401
+    # as_attachment : sans cela Safari affiche l image dans l onglet au lieu de
+    # proposer de l enregistrer, et on perd le fichier.
+    try:
+        return send_from_directory(files_dir(), safe_name(name), as_attachment=True)
+    except Exception:
+        # Nom fantaisiste ou fichier efface entre la liste et le clic : une
+        # erreur 500 laisserait croire a une panne du serveur.
+        return jsonify(ok=False, error="No such file."), 404
+
+
+@app.route("/files/delete", methods=["POST"])
+def files_delete():
+    if not logged_in():
+        return jsonify(ok=False), 401
+    name = safe_name((request.get_json(silent=True) or {}).get("name", ""))
+    path = os.path.join(files_dir(), name)
+    try:
+        os.remove(path)
+    except OSError as exc:
+        return jsonify(ok=False, error=str(exc)), 404
+    event("INFO", "File deleted", name=name)
+    return jsonify(ok=True)
+
+
+def parse_tailscale_status(text):
+    """Tire l adresse de la sortie de `tailscale status --json`.
+
+    Separee pour pouvoir etre eprouvee sans Tailscale installe : c est la
+    partie qui peut se tromper, l appel au binaire n a rien d interessant.
+    """
+    if not text:
+        return None
+    try:
+        self_info = json.loads(text).get("Self") or {}
+    except (ValueError, AttributeError):
+        return None
+
+    # Le nom MagicDNS est prefere a l adresse : il ne change pas, la ou une
+    # adresse peut etre reattribuee.
+    name = (self_info.get("DNSName") or "").rstrip(".")
+    if name and self_info.get("Online"):
+        return name
+    for addr in self_info.get("TailscaleIPs") or []:
+        if ":" not in addr:          # on laisse l IPv6 de cote
+            return addr
+    return None
+
+
+def tailscale_address():
+    """Adresse du PC sur le reseau prive Tailscale, ou None.
+
+    Le serveur n a rien de special a faire pour etre joignable de l exterieur :
+    il ecoute deja sur toutes les interfaces, donc sur celle de Tailscale des
+    qu elle existe. La seule chose qui manquait etait de connaitre cette
+    adresse pour pouvoir l afficher - sinon il faut la taper a la main.
+
+    On prefere le nom MagicDNS a l adresse : il ne change pas, la ou une
+    adresse peut etre reattribuee.
+    """
+    exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                       "Tailscale", "tailscale.exe")
+    if not os.path.exists(exe):
+        exe = "tailscale"
+
+    def run(args):
+        try:
+            out = subprocess.run([exe] + args, capture_output=True, text=True,
+                                 timeout=4,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    parsed = parse_tailscale_status(run(["status", "--json"]))
+    if parsed:
+        return parsed
+
+    first = (run(["ip", "-4"]) or "").splitlines()
+    return first[0].strip() if first else None
 
 
 def local_ip():
@@ -935,30 +1544,36 @@ def parse_args():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Controle du PC depuis un telephone, sur le reseau local.")
+        description="Control the PC from a phone, over the local network.")
     parser.add_argument("--pin", default=PIN,
-                        help="code d acces (defaut : variable REMOTE_PIN, sinon 1312)")
-    parser.add_argument("--port", type=int, default=5000, help="port d ecoute")
+                        help="access code (default: REMOTE_PIN, else a random one)")
+    parser.add_argument("--port", type=int, default=5000, help="port to listen on")
     parser.add_argument("--host", default="0.0.0.0",
-                        help="interface d ecoute ; 127.0.0.1 pour n exposer que la machine")
+                        help="interface to listen on; 127.0.0.1 exposes the machine only")
     parser.add_argument("--width", type=int, default=STREAM_WIDTH,
-                        help="largeur du flux interactif en pixels")
+                        help="width of the interactive stream, in pixels")
     parser.add_argument("--quality", type=int, default=JPEG_QUALITY,
-                        help="qualite JPEG du flux interactif, 1 a 95")
+                        help="JPEG quality of the interactive stream, 1 to 95")
     parser.add_argument("--fps", type=int, default=int(round(1 / FRAME_DELAY)),
-                        help="images par seconde du flux interactif")
-    parser.add_argument("--audio", metavar="NOM",
-                        help="peripherique audio du mode cinema ; 'none' pour couper")
+                        help="frames per second of the interactive stream")
+    parser.add_argument("--audio", metavar="NAME",
+                        help="audio device for cinema mode; 'none' to stay silent")
     parser.add_argument("--cinema-bitrate", default="6M",
-                        help="debit video du mode cinema")
+                        help="video bitrate of cinema mode")
     parser.add_argument("--cinema-fps", type=int, default=30,
-                        help="images par seconde du mode cinema")
+                        help="frames per second of cinema mode")
+    parser.add_argument("--monitor", type=int, default=1, metavar="N",
+                        help="screen streamed at startup, 1 to N")
+    parser.add_argument("--files-dir", metavar="PATH", default=FILES_DIR,
+                        help="folder shared with the phone in both directions")
     parser.add_argument("--list-audio", action="store_true",
-                        help="mesure et affiche le niveau de chaque peripherique, puis quitte")
+                        help="measure and print the level of every device, then exit")
+    parser.add_argument("--json", action="store_true",
+                        help="with --list-audio: JSON output, for the interface")
     return parser.parse_args()
 
 
-def list_audio(seconds=2):
+def list_audio(seconds=2, as_json=False):
     """Affiche les peripheriques avec leur niveau reel.
 
     Un peripherique peut s ouvrir sans erreur et ne porter que du silence : les
@@ -967,28 +1582,34 @@ def list_audio(seconds=2):
     laissant tourner un son sur la machine pendant la mesure.
     """
     names = cinema.list_audio_devices()
-    if not names:
-        print("Aucun peripherique audio DirectShow detecte.")
+    if as_json:
+        # The interface needs the names to fill its list; the measurement
+        # itself costs two seconds per device.
+        print(json.dumps([{"name": n, "level": cinema.measure_device(n, seconds)}
+                          for n in names], ensure_ascii=False))
         return
-    print("Mesure sur %d secondes chacun - laisse un son tourner pendant ce temps.\n"
+    if not names:
+        print("No DirectShow audio device found.")
+        return
+    print("Measuring %d seconds each - leave a sound playing meanwhile.\n"
           % seconds)
     for name in names:
         level = cinema.measure_device(name, seconds)
         if level is None:
-            verdict = "illisible"
+            verdict = "unreadable"
         elif level < -80:
             verdict = "silence"
         else:
             verdict = "%.0f dB" % level
         print("  %-46s %s" % (name, verdict))
-    print("\nReprends le nom exact avec --audio \"...\"")
+    print("\nPass the exact name back with --audio \"...\"")
 
 
 if __name__ == "__main__":
     args = parse_args()
 
     if args.list_audio:
-        list_audio()
+        list_audio(as_json=args.json)
         raise SystemExit(0)
 
     PIN = args.pin
@@ -1000,18 +1621,41 @@ if __name__ == "__main__":
     if args.audio is not None:
         cinema.set_audio_device(args.audio)
 
+    current_monitor["idx"] = min(max(1, args.monitor), MONITOR_COUNT)
+    FILES_DIR = args.files_dir
+
     device = cinema.pick_audio_device()
+    tailnet = tailscale_address()
+    remote_url = "http://%s:%d" % (tailnet, args.port) if tailnet else None
+    ffmpeg = cinema.ffmpeg_available()
+    capture = None
+    if ffmpeg:
+        capture = "ddagrab (GPU)" if cinema._has_ddagrab() else "gdigrab (CPU)"
+
+    # One event carries every startup fact, as JSON: without it the
+    # interface would have to scrape the banner below, and would break at the
+    # first reworded word.
+    event("READY", "Server started",
+          url="http://%s:%d" % (local_ip(), args.port),
+          pin=PIN, port=args.port,
+          monitors=MONITOR_COUNT, monitor=current_monitor["idx"],
+          width=STREAM_WIDTH, quality=JPEG_QUALITY, fps=args.fps,
+          ffmpeg=ffmpeg, capture=capture, audio=device, files=FILES_DIR,
+          remote=remote_url)
+
     print("=" * 60)
-    print("PIN de connexion : %s" % PIN)
-    print("Depuis ton telephone (meme reseau) : http://%s:%d" % (local_ip(), args.port))
-    print("Ecrans detectes  : %d" % MONITOR_COUNT)
-    print("Flux interactif  : %dpx, qualite %d, ~%d i/s"
+    print("Connection PIN : %s" % PIN)
+    print("From your phone (same network) : http://%s:%d" % (local_ip(), args.port))
+    print("Screens found  : %d" % MONITOR_COUNT)
+    print("Interactive    : %dpx, quality %d, ~%d fps"
           % (STREAM_WIDTH, JPEG_QUALITY, args.fps))
     if not cinema.ffmpeg_available():
-        print("Mode cinema      : indisponible (ffmpeg absent du PATH)")
+        print("Cinema mode    : unavailable (ffmpeg not in PATH)")
     else:
-        capture = "ddagrab (GPU)" if cinema._has_ddagrab() else "gdigrab (processeur)"
-        print("Mode cinema      : %s, %s a %d i/s" % (capture, args.cinema_bitrate, args.cinema_fps))
-        print("Son du cinema    : %s" % (device or "aucun - voir --list-audio"))
+        capture = "ddagrab (GPU)" if cinema._has_ddagrab() else "gdigrab (CPU)"
+        print("Cinema mode    : %s, %s at %d fps" % (capture, args.cinema_bitrate, args.cinema_fps))
+        print("Cinema sound   : %s" % (device or "none - see --list-audio"))
+    print("Shared folder  : %s" % FILES_DIR)
+    print("Remote access  : %s" % (remote_url or "none - Tailscale not detected"))
     print("=" * 60)
     app.run(host=args.host, port=args.port, threaded=True)
