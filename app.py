@@ -549,6 +549,35 @@ screenImg.addEventListener('click', e => {
   sendClick((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
 });
 
+/* ---- reconnexion du flux ----
+   L image est un flux MJPEG dans une balise <img> : une seule connexion qui
+   ne finit jamais. Quand elle tombe - passage en arriere-plan, verrouillage,
+   redemarrage du serveur - iOS n en rouvre pas de neuve tout seul et affiche
+   un "?" ou du noir. On la relance donc a chaque echec et a chaque retour au
+   premier plan, ce dernier cas etant frequent avec l app de l ecran d accueil
+   qu iOS met en sommeil.
+
+   Le ?t= est indispensable : sans lui, iOS reutilise la connexion morte du
+   cache au lieu d en etablir une neuve. */
+let streamRetry = null;
+function reloadStream(){
+  clearTimeout(streamRetry);
+  screenImg.src = '/stream?t=' + Date.now();
+}
+
+screenImg.addEventListener('error', () => {
+  streamRetry = setTimeout(reloadStream, 600);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) reloadStream();
+});
+
+/* Restauration depuis le cache page-arriere (bfcache), typique du retour dans
+   une app d ecran d accueil : la page revient telle quelle, connexion morte
+   comprise, sans passer par un rechargement. */
+window.addEventListener('pageshow', e => { if (e.persisted) reloadStream(); });
+
 window.addEventListener('resize', applyTransform);
 applyTransform();
 
