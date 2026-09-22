@@ -163,8 +163,6 @@ MAIN_PAGE = """
     box-shadow:0 4px 16px rgba(0,0,0,0.4);
     -webkit-tap-highlight-color:transparent}
   #controls button:active{background:rgba(72,72,78,0.85)}
-  #soundBtn.on{background:rgba(30,110,60,0.88);border-color:rgba(130,255,170,.65)}
-  #soundBtn.loading{opacity:.65}
   /* Touches d'un seul signe : des ronds, plutot que des fleches etirees. */
   #controls button.ico{width:44px;padding:10px 0;text-align:center}
   /* order:-1 fait remonter le tiroir au-dessus de la rangee principale, et
@@ -236,7 +234,6 @@ MAIN_PAGE = """
   <div id="controls">
     <button onclick="nextMonitor()" id="monBtn">Screen</button>
     <button onclick="location.href='/cinema'">Cinema</button>
-    <button onclick="toggleSound()" id="soundBtn">Sound</button>
     <button onclick="toggleFiles()">Files</button>
     <button class="ico" onclick="toggleHelp()">i</button>
     <button onclick="toggleMore()">More &#9662;</button>
@@ -269,8 +266,8 @@ MAIN_PAGE = """
         tapping it opens the phone keyboard</dd>
       <dt>Cinema</dt><dd>video with sound, real full screen, no interaction and
         a few seconds behind</dd>
-      <dt>Sound</dt><dd>keeps the PC audio in the interactive view; it stays a
-        few seconds behind</dd>
+      <dt>Sound</dt><dd>the PC audio plays on its own, about a fifth of a
+        second behind</dd>
     </dl>
     <div class="close">Tap to close</div>
   </div>
@@ -410,6 +407,7 @@ function endDrag(){
 }
 
 viewport.addEventListener('touchstart', e => {
+  armSound();   /* le son s allume au premier contact, iOS l exige */
   if (isControlTouch(e.touches[0])) { dragStart = null; return; }
   if (e.touches.length === 2) {
     cancelLongPress();
@@ -582,15 +580,12 @@ function toggleHelp(){
 }
 
 /* ================= sound in the interactive view =================
-   Raw PCM over a WebSocket, scheduled into Web Audio, rather than the HLS
-   stream of cinema mode. HLS buffers whole segments, which put the sound three
-   to five seconds behind an image that arrives in real time - the two came by
-   different roads and the gap was plain to hear. See audio.py.
+   Raw PCM over a WebSocket, scheduled into Web Audio. See audio.py.
 
-   The first tap is not optional: iOS refuses to let a page start sound, or
-   even resume an AudioContext, outside an explicit user gesture. */
-const soundBtn = document.getElementById('soundBtn');
-let soundOn = false, soundStarting = false;
+   Sound is always on: there is no button. The one unavoidable constraint is
+   iOS, which refuses to start audio - or even resume an AudioContext - outside
+   a user gesture. So it arms itself on the first touch of the screen, the same
+   touch you make to start controlling the PC, and you never think about it. */
 let audioCtx = null, audioSock = null, playAt = 0;
 
 /* Marge de programmation. Trop courte, le moindre hoquet du Wi-Fi se fait
@@ -598,22 +593,10 @@ let audioCtx = null, audioSock = null, playAt = 0;
 const LEAD = 0.12;
 const MAX_AHEAD = 0.6;
 
-function markSoundOn(){
-  soundOn = true;
-  soundBtn.classList.add('on');
-  soundBtn.textContent = 'Sound ON';
-}
-
-function markSoundOff(label){
-  soundOn = false;
-  soundBtn.classList.remove('on');
-  soundBtn.textContent = label;
-}
-
 function playChunk(data){
   const pcm = new Int16Array(data);
   const frames = pcm.length / 2;
-  if (!frames) return;
+  if (!frames || !audioCtx) return;
 
   /* Le tampon porte sa propre frequence : sur iPhone le contexte tourne
      souvent a 44,1 kHz, et Web Audio reechantillonne tout seul plutot que de
@@ -638,39 +621,35 @@ function playChunk(data){
   playAt += buf.duration;
 }
 
+function openSound(){
+  const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  audioSock = new WebSocket(scheme + location.host + '/audio');
+  audioSock.binaryType = 'arraybuffer';
+  audioSock.onmessage = e => playChunk(e.data);
+  audioSock.onopen = () => { playAt = 0; };
+  /* Coupure reseau ou reveil : on oublie la socket, le prochain contact la
+     rouvrira via armSound. */
+  audioSock.onclose = () => { audioSock = null; };
+  audioSock.onerror = () => {};
+}
+
+/* Appelee a chaque contact de l ecran : arme le son au premier, le relance
+   ensuite s il s est endormi. Doit s executer dans le geste et sans attente
+   reseau, sinon iOS considere l autorisation expiree - d ou resume() lance
+   sans await. */
+function armSound(){
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!audioSock) openSound();
+  } catch (e) {
+    /* Pas de Web Audio sur cet appareil : on n insiste pas, le reste marche. */
+  }
+}
+
 function stopSound(){
   if (audioSock) { audioSock.onclose = null; audioSock.close(); audioSock = null; }
   playAt = 0;
-  markSoundOff('Sound');
-}
-
-async function toggleSound(){
-  if (soundStarting) return;
-  if (soundOn) { stopSound(); return; }
-
-  soundStarting = true;
-  soundBtn.classList.add('loading');
-  soundBtn.textContent = 'Sound...';
-  try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    /* resume() doit arriver dans le geste, pas apres une attente reseau :
-       iOS considere sinon que l autorisation a expire. */
-    await audioCtx.resume();
-
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    audioSock = new WebSocket(scheme + location.host + '/audio');
-    audioSock.binaryType = 'arraybuffer';
-    audioSock.onmessage = e => playChunk(e.data);
-    audioSock.onopen = () => { playAt = 0; markSoundOn(); };
-    audioSock.onerror = () => markSoundOff('Retry sound');
-    audioSock.onclose = () => { if (soundOn) markSoundOff('Retry sound'); };
-  } catch (e) {
-    markSoundOff('Retry sound');
-  } finally {
-    soundStarting = false;
-    soundBtn.classList.remove('loading');
-  }
-  showControls();
 }
 
 /* Ecran verrouille ou onglet ferme : la WebSocket part avec la page, et
