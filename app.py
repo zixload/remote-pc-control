@@ -639,7 +639,15 @@ function openSound(){
    sans await. */
 function armSound(){
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      /* Sans ceci, iOS traite le Web Audio comme un effet sonore et le coupe
+         des que l interrupteur silence du telephone est active - ce que le
+         mode HLS video ne subissait pas. 'playback' le declare comme un media,
+         qui joue malgre l interrupteur. Safari 16.4+, ignore ailleurs. */
+      try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; }
+      catch (e) {}
+    }
     if (audioCtx.state === 'suspended') audioCtx.resume();
     if (!audioSock) openSound();
   } catch (e) {
