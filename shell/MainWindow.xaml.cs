@@ -17,6 +17,7 @@ public partial class MainWindow : FluentWindow
 
     private readonly AppConfig _config = AppConfig.Load();
     private readonly ServerProcess _server = new();
+    private readonly TailscaleController _tailscale = new();
     private readonly List<LogEntry> _all = new();
     private readonly ObservableCollection<LogEntry> _shown = new();
 
@@ -122,14 +123,23 @@ public partial class MainWindow : FluentWindow
 
     // --- server ---
 
-    private void StartServer()
+    private async void StartServer()
     {
         HomePage.ShowStarting();
         PaneStatus.Text = "Starting";
+
+        // Tailscale must be up before the server starts, not after: the server
+        // reads the tailnet address once, at startup, to build the remote QR.
+        if (_config.ManageTailscale && _tailscale.Available)
+        {
+            Append(new LogEntry(DateTime.Now, LogLevel.Info, "Bringing Tailscale up..."));
+            await _tailscale.EnsureUpAsync();
+        }
+
         _server.Start(_config);
     }
 
-    private void StopServer()
+    private void StopServer(bool releaseTailscale = true)
     {
         _server.Stop();
         HomePage.ShowStopped();
@@ -137,6 +147,11 @@ public partial class MainWindow : FluentWindow
         SettingsPage.SetServerRunning(false);
         _tray?.SetRunning(false);
         Append(new LogEntry(DateTime.Now, LogLevel.Info, "Server stopped."));
+
+        // Not on a restart: bringing Tailscale down and straight back up would
+        // blink the connection every time a setting changes.
+        if (releaseTailscale && _config.ManageTailscale)
+            _tailscale.DownIfWeBroughtItUp();
     }
 
     private void OnToggleServer()
@@ -150,7 +165,7 @@ public partial class MainWindow : FluentWindow
     private void RestartServer()
     {
         if (_server.IsRunning)
-            StopServer();
+            StopServer(releaseTailscale: false);
         StartServer();
     }
 
@@ -274,6 +289,8 @@ public partial class MainWindow : FluentWindow
         }
 
         _server.Dispose();
+        if (_config.ManageTailscale)
+            _tailscale.DownIfWeBroughtItUp();
         _tray?.Dispose();
     }
 }

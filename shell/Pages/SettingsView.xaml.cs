@@ -29,6 +29,7 @@ public partial class SettingsView : UserControl
         BitrateBox.Text = config.CinemaBitrate;
         TrayToggle.IsChecked = config.MinimizeToTray;
         AutoStartToggle.IsChecked = config.AutoStart;
+        TailscaleToggle.IsChecked = config.ManageTailscale;
 
         // Until a measurement has run, the list holds only the two choices
         // that need no knowledge of the hardware.
@@ -115,6 +116,7 @@ public partial class SettingsView : UserControl
         _config.CinemaBitrate = string.IsNullOrWhiteSpace(BitrateBox.Text) ? "6M" : BitrateBox.Text.Trim();
         _config.MinimizeToTray = TrayToggle.IsChecked == true;
         _config.AutoStart = AutoStartToggle.IsChecked == true;
+        _config.ManageTailscale = TailscaleToggle.IsChecked == true;
 
         _config.Audio = AudioCombo.SelectedItem switch
         {

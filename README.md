@@ -55,7 +55,8 @@ The button bar also has **Sound**, **Files**, a keyboard, and a **Cinema** mode
 - **Cinema** — real full-screen HLS video with sound. Needs ffmpeg.
 - **Remote access** — reach the PC from anywhere with [Tailscale](https://tailscale.com):
   install it on both devices, sign into the same account, and use the tailnet
-  address. Nothing is exposed publicly.
+  address. Nothing is exposed publicly. The desktop app turns Tailscale on with
+  the server and off when it stops (unless you already had it on).
 
 ## Options
 

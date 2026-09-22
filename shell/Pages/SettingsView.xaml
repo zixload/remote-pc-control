@@ -203,6 +203,22 @@
             <ui:ToggleSwitch x:Name="AutoStartToggle" />
         </ui:CardControl>
 
+        <TextBlock Text="Remote access" Style="{StaticResource SectionTitle}" />
+
+        <ui:CardControl>
+            <ui:CardControl.Icon>
+                <ui:SymbolIcon Symbol="Earth24" />
+            </ui:CardControl.Icon>
+            <ui:CardControl.Header>
+                <StackPanel>
+                    <TextBlock Text="Manage Tailscale automatically" />
+                    <TextBlock Style="{StaticResource RowDescription}"
+                               Text="Turn Tailscale on with the server and off when it stops. Left untouched if you already had it on." />
+                </StackPanel>
+            </ui:CardControl.Header>
+            <ui:ToggleSwitch x:Name="TailscaleToggle" />
+        </ui:CardControl>
+
         <ui:InfoBar x:Name="RestartHint" Severity="Informational" IsClosable="False"
                     IsOpen="False" Margin="0,14,0,0"
                     Title="Settings saved"

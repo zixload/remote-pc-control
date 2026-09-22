@@ -43,6 +43,9 @@ public sealed class AppConfig
     public bool MinimizeToTray { get; set; } = true;
     public bool AutoStart { get; set; } = true;
 
+    /// <summary>Turn Tailscale on with the server and off when it stops.</summary>
+    public bool ManageTailscale { get; set; } = true;
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
