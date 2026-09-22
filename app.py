@@ -407,7 +407,6 @@ function endDrag(){
 }
 
 viewport.addEventListener('touchstart', e => {
-  armSound();   /* le son s allume au premier contact, iOS l exige */
   if (isControlTouch(e.touches[0])) { dragStart = null; return; }
   if (e.touches.length === 2) {
     cancelLongPress();
@@ -663,6 +662,17 @@ function stopSound(){
 /* Ecran verrouille ou onglet ferme : la WebSocket part avec la page, et
    ffmpeg s arrete cote PC des que le dernier auditeur disparait. */
 window.addEventListener('pagehide', stopSound);
+
+/* iOS ne debloque le son que dans un vrai geste, et un simple touchstart sur
+   l ecran n y suffit pas toujours la ou un clic de bouton oui - d ou le son
+   qui n arrivait qu apres avoir touche un bouton. On arme donc sur le premier
+   de plusieurs evenements. Et openSound est lance des le chargement pour que
+   ffmpeg soit deja chaud quand le geste debloque la lecture : sinon le son ne
+   viendrait que deux secondes plus tard, le temps que la capture demarre. */
+['pointerdown', 'touchstart', 'touchend', 'click'].forEach(function(ev){
+  document.addEventListener(ev, armSound, {passive: true});
+});
+openSound();
 
 function rclick(){ sendClick(0.5, 0.5, 'right'); }
 function key(name){
