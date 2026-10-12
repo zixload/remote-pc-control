@@ -77,8 +77,26 @@ public sealed class TailscaleController
         if (_cli is null || !_broughtUp)
             return;
         _broughtUp = false;
-        try { RunAsync("down").GetAwaiter().GetResult(); }
-        catch (Exception) { /* already offline or gone: nothing to do */ }
+        try
+        {
+            // Fire and forget, never a blocking wait. `.GetAwaiter().GetResult()`
+            // on the UI thread deadlocked against RunAsync's continuations,
+            // which resume on that same thread: the window froze and Windows
+            // closed it as not responding. tailscale.exe is its own process and
+            // finishes the disconnect on its own once launched, even if the app
+            // is quitting.
+            var info = new ProcessStartInfo(_cli)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            info.ArgumentList.Add("down");
+            Process.Start(info);
+        }
+        catch (Exception)
+        {
+            // already offline or gone: nothing to do
+        }
     }
 
     private async Task<bool> IsOnlineAsync()
